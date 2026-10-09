@@ -36,6 +36,11 @@ docs/fill-domain-doc
 A branch morre depois do merge. Cada PR ganha um branch Neon
 `ci/pr-<n>`, apagado quando a PR fecha (`docs/neon.md`).
 
+Com o Claude Code, a branch nasce pelo `/new-branch <tipo>/<slug>` e a
+task é conduzida pelos comandos de `tasks/how-to-use.md`. O `<slug>` é o
+ID da task: `tasks/<slug>/` (spec, tickets e log) é versionada e entra
+na mesma PR.
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/):

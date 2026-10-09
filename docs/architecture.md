@@ -549,3 +549,22 @@ lockfile podado). Como o `bun build` já empacota tudo e o runtime só leva
 **Alternativas consideradas**: `turbo prune @repo/api --docker`
 (reavaliar quando o suporte a `bun.lock` estabilizar; a troca fica
 restrita ao Dockerfile).
+
+### Fluxo de tasks do Claude Code versionado no template
+
+**Decisão**: o template distribui `.claude/skills/` (`new-branch`,
+`update-main`), `.claude/commands/` (`/new-task`, `/investigate`,
+`/create-tickets`, `/implement-ticket`, `/adjust`, `/close-task`) e
+`tasks/_templates/` + `tasks/how-to-use.md`. Cada task vive em
+`tasks/<slug>/` (spec, tickets e log), com `<slug>` igual ao da branch
+`<tipo>/<slug>`, e é versionada junto com o código.
+**Contexto**: o fluxo foi provado num workspace com vários repos
+(new-music). Aqui é adaptado a um repo só: branch no padrão de
+`docs/git-workflow.md`, gates do CI (`lint`, `typecheck`, `test`,
+`build --affected`, `docker build` da API) e Conventional Commits. Os
+comandos reforçam as regras não-negociáveis (sem push nem PR sem ok,
+nunca `--no-verify`, banco local só, migration nunca por `push`).
+**Alternativas consideradas**: branch `task-N` como no workspace de
+origem (rejeitado: diverge da convenção `<tipo>/<slug>` do commitlint e
+do título da PR); `tasks/` fora do git (rejeitado: num repo só, spec e
+decisões servem de histórico na própria PR).
