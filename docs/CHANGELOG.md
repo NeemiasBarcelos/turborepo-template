@@ -4,6 +4,28 @@ Todas as mudanças notáveis na baseline deste template são registradas
 aqui. Formato baseado em [Keep a Changelog](https://keepachangelog.com/),
 versionamento conforme `docs/versioning.md`.
 
+## [0.2.0] - 2026-10-09
+
+Embute app-nextjs `0.1.0` e api-bun `0.16.0`.
+
+### Adicionado
+
+- Fluxo de tasks do Claude Code (`tasks/how-to-use.md`):
+  - skills `.claude/skills/new-branch` (branch `<tipo>/<slug>` a partir
+    da `main` atualizada + ambiente local) e `.claude/skills/update-main`;
+  - comandos `.claude/commands/` `new-task`, `investigate`,
+    `create-tickets`, `implement-ticket`, `adjust` e `close-task`;
+  - `tasks/_templates/` (`spec.md`, `tickets.md`, `log.md`). Cada task
+    fica em `tasks/<slug>/`, versionada.
+- Decisão registrada em `docs/architecture.md`, referências em
+  `CLAUDE.md`, `README.md` e `docs/git-workflow.md`.
+
+### Contexto
+
+Adaptado do fluxo usado no workspace new-music (vários repos, pnpm,
+branches `task-N`) para um repo só, com a convenção de branch, commits e
+gates de CI deste template.
+
 ## [0.1.0] - 2026-09-30
 
 Embute app-nextjs `0.1.0` e api-bun `0.16.0`.

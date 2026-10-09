@@ -18,7 +18,8 @@ deste template e herda a stack e as regras abaixo.
 
 Este repositório contém a **baseline documentada** do monorepo (regras,
 arquitetura, Neon, desenvolvimento, deploy, CI/CD, convenções, git
-workflow, versionamento), versão atual **0.1.0** (`docs/CHANGELOG.md`),
+workflow, versionamento, fluxo de tasks do Claude Code), versão atual
+**0.2.0** (`docs/CHANGELOG.md`),
 embutindo app-nextjs `0.1.0` e api-bun `0.16.0`.
 
 O scaffold de código **ainda não foi gerado**: não existem
@@ -122,6 +123,7 @@ Ordem sugerida de leitura:
 | `docs/git-workflow.md` | Branch, commits com escopo de módulo/workspace, PR, merge, Husky |
 | `docs/versioning.md` | Versão do template, baselines embutidas e sincronização com app-nextjs/api-bun |
 | `docs/checklists.md` | Feature ponta a ponta, PR, setup de instância, sincronização, bump |
+| `tasks/how-to-use.md` + `.claude/` | Fluxo de tasks do Claude Code: skills `new-branch`/`update-main` e comandos `/new-task` a `/close-task` |
 | `docs/domain.md` | Domínio e infra: vazio no template, preenchido por cada instância |
 | `docs/features/` | Docs de features complexas: vazio no template |
 | `apps/web/CLAUDE.md` + `apps/web/docs/` | Baseline app-nextjs com as diferenças no monorepo |

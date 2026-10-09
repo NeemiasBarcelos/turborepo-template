@@ -26,7 +26,7 @@ Diferenças no monorepo". Quando conflitarem com este arquivo, este vence.
 
 Versionamento semântico próprio: ver `docs/versioning.md` para o que
 conta como MAJOR/MINOR/PATCH e `docs/CHANGELOG.md` para o histórico.
-Versão atual: **0.1.0** (embute app-nextjs `0.1.0` e api-bun `0.16.0`).
+Versão atual: **0.2.0** (embute app-nextjs `0.1.0` e api-bun `0.16.0`).
 
 ## Stack
 
@@ -114,6 +114,9 @@ baseline (`docs/versioning.md`), nunca como exceção silenciosa.
 - Workflows do GitHub Actions, secrets → `docs/ci-cd.md`
 - Imports entre workspaces, Biome, tsconfig, scripts → `docs/conventions.md`
 - Branch, commits, PR e merge → `docs/git-workflow.md`
+- Fluxo de tasks (`/new-branch`, `/new-task`, `/investigate`,
+  `/create-tickets`, `/implement-ticket`, `/adjust`, `/close-task`) →
+  `tasks/how-to-use.md`
 - Checklists (feature ponta a ponta, PR, setup, bump) → `docs/checklists.md`
 - Mecanismo de versão e sincronização com app-nextjs/api-bun → `docs/versioning.md`
 - Glossário, módulos e infra desta instância → `docs/domain.md`
@@ -136,4 +139,4 @@ baseline (`docs/versioning.md`), nunca como exceção silenciosa.
 
 ---
 
-Versão da baseline: 0.1.0. Ver `docs/CHANGELOG.md`.
+Versão da baseline: 0.2.0. Ver `docs/CHANGELOG.md`.
