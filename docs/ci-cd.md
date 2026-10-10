@@ -375,8 +375,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     steps:
-      # Específico do host (docs/deploy.md, "### Host da API"):
-      # apontar api-staging para ghcr.io/<owner>/<repo>-api:sha-<SHA>
+      # Específico do host (docs/deploy.md, "### Host da API"; referência
+      # pronta para o Render lá). Apontar api-staging para
+      # ghcr.io/<owner>/<repo>-api:sha-<SHA>
       - run: echo "deploy staging sha-$SHA"
 
   migrate-production:
@@ -409,6 +410,12 @@ jobs:
   Turborepo"). `DATABASE_URL_UNPOOLED` já está lá.
 - **Staging sempre antes de produção.** Uma migration que quebra em
   staging para o fluxo antes de tocar `main`.
+- **O `echo` é placeholder.** O scaffold troca pelo passo do host
+  escolhido; para o Render, o snippet de `docs/deploy.md`, "#### Referência:
+  Render". Conferir o workflow com `actionlint` antes da PR.
+- Recomendado na instância: fixar as actions por SHA, com a tag em
+  comentário (`uses: actions/checkout@<sha> # v4`); o Dependabot atualiza
+  os dois.
 - Rollback e ordem web × API: `docs/deploy.md`.
 
 ## Branch protection
@@ -426,7 +433,7 @@ mensagem, apagar branch) em `docs/git-workflow.md`.
 | `NEON_PROJECT_ID` | variable | repositório | idem |
 | `TURBO_TOKEN` / `TURBO_TEAM` | secret / variable | repositório | cache remoto (opcional) |
 | `DATABASE_URL_UNPOOLED` | secret | Environment `staging` e `production` | `api-deploy.yml` (migrate) |
-| tokens do host | secret | Environment `staging` e `production` | `api-deploy.yml` (deploy) |
+| tokens do host (ex: `RENDER_DEPLOY_HOOK_URL`) | secret | Environment `staging` e `production` | `api-deploy.yml` (deploy) |
 
 Variáveis de runtime da API ficam no host. As do web ficam na Vercel.
 

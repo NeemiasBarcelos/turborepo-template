@@ -3,7 +3,7 @@
 # CLAUDE.md
 
 > Baseado em app-nextjs v0.1.0, adaptado ao monorepo `turborepo-template`
-> v0.1.0. Leia antes `../../CLAUDE.md` (regras da raiz, que vencem em caso
+> v0.3.0. Leia antes `../../CLAUDE.md` (regras da raiz, que vencem em caso
 > de conflito) e "## Diferenças no monorepo" no fim deste arquivo.
 
 Guia para o Claude ao trabalhar neste repositório. Este arquivo é a raiz;
@@ -171,5 +171,5 @@ e de `docs/` vale como está):
 
 ---
 
-Versão da baseline: 0.1.0 (app-nextjs), dentro de turborepo-template 0.1.0.
+Versão da baseline: 0.1.0 (app-nextjs), dentro de turborepo-template 0.3.0.
 Ver `../../docs/CHANGELOG.md`.

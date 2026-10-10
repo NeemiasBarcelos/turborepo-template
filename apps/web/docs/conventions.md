@@ -83,7 +83,10 @@ src/features/tasks/
 
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useForm } from 'react-hook-form';
+import { Controller, useForm } from 'react-hook-form';
+import { Button } from '@/components/ui/button';
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
 import { createTask } from '@/features/tasks/api/mutations';
 import { taskKeys } from '@/features/tasks/api/queries';
 import { type CreateTask, createTaskSchema } from '@/features/tasks/schemas/task';
@@ -102,9 +105,30 @@ export function TaskForm({ organizationId }: { organizationId: string }) {
     onError: (error) => applyApiIssues(error, form.setError), // 400 com issues → campos
   });
 
-  return <form onSubmit={form.handleSubmit((values) => mutation.mutate(values))}>{/* FormField… */}</form>;
+  return (
+    <form onSubmit={form.handleSubmit((values) => mutation.mutate(values))} noValidate>
+      <FieldGroup>
+        <Controller
+          name="title"
+          control={form.control}
+          render={({ field, fieldState }) => (
+            <Field data-invalid={fieldState.invalid}>
+              <FieldLabel htmlFor="title">Título</FieldLabel>
+              <Input {...field} id="title" aria-invalid={fieldState.invalid} />
+              <FieldError errors={[fieldState.error]} />
+            </Field>
+          )}
+        />
+        <Button type="submit" disabled={mutation.isPending}>Criar</Button>
+      </FieldGroup>
+    </form>
+  );
 }
 ```
+
+- Campo = `Controller` do RHF + `Field` do shadcn 4 (`Field`,
+  `FieldLabel`, `FieldError`). O par `Form`/`FormField` dos shadcn antigos
+  não existe mais.
 
 - `defaultValues` sempre completos (inputs controlados do shadcn quebram
   com `undefined`).
@@ -126,7 +150,7 @@ export function TaskForm({ organizationId }: { organizationId: string }) {
 
 ## Acessibilidade (mínimo obrigatório)
 
-- Todo input com `<Label>` associado (o `FormField` do shadcn já faz).
+- Todo input com label associado (`FieldLabel` com `htmlFor` igual ao `id` do input).
 - Botão só com ícone tem `aria-label` (ou `<span className="sr-only">`).
 - Interação por teclado funcionando. Não trocar `<button>` por `<div
   onClick>`.

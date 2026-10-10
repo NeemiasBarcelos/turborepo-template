@@ -94,7 +94,8 @@ sozinho não deixa isso óbvio.
 3. Atualizar o `CLAUDE.md` afetado se mexe em "Regras não-negociáveis".
 4. Bump de versão pelo checklist de `docs/checklists.md` ("## Bump de
    versão da baseline"). A versão aparece em `CLAUDE.md` (x2),
-   `README.md` e `docs/CHANGELOG.md`.
+   `README.md`, `docs/CHANGELOG.md` e no cabeçalho e rodapé de
+   `apps/web/CLAUDE.md` e `apps/api/CLAUDE.md`.
 5. Só depois propagar manualmente para as instâncias existentes (não há
    sincronização automática).
 

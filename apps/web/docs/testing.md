@@ -43,6 +43,12 @@ de implementação (estado interno, nome de classe, chamada de hook).
   Isolamento entre tenants").
 - Rota autenticada sem sessão redireciona para `/sign-in`.
 
+**No scaffold** (sem módulo de negócio), só os fluxos de auth são
+obrigatórios: rota protegida → `/sign-in?next=`, cadastro → logout → login
+(com a organização ativa visível) e senha errada. O teste de troca de
+organização exige dado de negócio e um usuário em duas organizações, então
+entra **com a primeira feature de negócio**.
+
 **Opcional**: componentes puramente visuais sem lógica, wrappers finos de
 componente do shadcn.
 
@@ -63,8 +69,11 @@ export default defineConfig({
   plugins: [tsconfigPaths(), react()],
   test: {
     environment: 'jsdom',
-    setupFiles: ['./tests/setup.ts'],
+    // URL da página no jsdom: base para caminhos relativos como /api/
+    environmentOptions: { jsdom: { url: 'http://localhost:3000' } },
+    setupFiles: ['./tests/setup.ts', './tests/next-navigation.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
+    env: { NEXT_PUBLIC_APP_URL: 'http://localhost:3000' },
   },
 });
 ```
@@ -72,16 +81,63 @@ export default defineConfig({
 ```ts
 // tests/setup.ts
 import '@testing-library/jest-dom/vitest';
-import { afterAll, afterEach, beforeAll } from 'vitest';
+import { cleanup } from '@testing-library/react';
+import { afterAll, afterEach } from 'vitest';
 import { server } from './mocks/server';
 
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
-afterEach(() => server.resetHandlers());
+// no browser, `new Request('/api/')` resolve contra a página; o Request do Node (que o
+// jsdom do Vitest mantém) não. O ky resolve `baseUrl` assim, então o teste imita o browser.
+const NodeRequest = globalThis.Request;
+globalThis.Request = class extends NodeRequest {
+  constructor(input: RequestInfo | URL, init?: RequestInit) {
+    super(
+      typeof input === 'string' && input.startsWith('/')
+        ? new URL(input, window.location.origin)
+        : input,
+      init,
+    );
+  }
+};
+
+// no topo, não em beforeAll: módulos que guardam o `fetch` ao carregar
+// (o client do Better Auth) já pegam a versão interceptada
+server.listen({ onUnhandledFrame: 'error' });
+afterEach(() => {
+  cleanup(); // sem `globals: true`, o Testing Library não limpa sozinho
+  server.resetHandlers();
+});
 afterAll(() => server.close());
 ```
 
-`onUnhandledRequest: 'error'` é intencional: request sem handler é bug de
-teste, nunca chamada real à rede.
+```ts
+// tests/next-navigation.ts — componentes client usam useRouter fora do Next
+import { vi } from 'vitest';
+
+export const router = { push: vi.fn(), refresh: vi.fn(), replace: vi.fn(), back: vi.fn() };
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => router,
+  usePathname: () => '/',
+  useSearchParams: () => new URLSearchParams(),
+}));
+```
+
+O teste que precisa conferir navegação importa `router` de
+`tests/next-navigation` e checa `router.push`.
+
+Pontos que o setup resolve (todos validados com Vitest 5, MSW 3 e jsdom 30):
+
+- **`onUnhandledFrame: 'error'`** é intencional: request sem handler é bug
+  de teste, nunca chamada real à rede. No MSW 3, a opção antiga
+  `onUnhandledRequest` é **ignorada em silêncio** em runtime (o padrão
+  volta a ser `warn`), então um teste poderia bater na rede sem falhar.
+- **`server.listen` no topo do arquivo**: em `beforeAll`, o client do
+  Better Auth (que captura o `fetch` quando o módulo carrega) escapa do
+  MSW e tenta `localhost:3000` (`ECONNREFUSED`).
+- **Shim do `Request`**: sem ele, todo teste que passa por
+  `lib/api/client.ts` falha com `Failed to parse URL from /api/`.
+- **`cleanup()`** no `afterEach` e o **mock de `next/navigation`** como
+  setup file.
 
 **Limitação**: o Vitest não renderiza **Server Components `async`**. Eles
 são cobertos pelo E2E; a lógica que dá para extrair (parse, mapeamento)
@@ -132,7 +188,9 @@ Contra o quê roda:
 
 Autenticação: login uma vez no `globalSetup` por usuário de teste, salvo em
 `storageState`, e reaproveitado pelas specs. Não fazer login pela UI em
-todo teste.
+todo teste. Exceção: as specs **do próprio fluxo de auth** (cadastro,
+login, logout) fazem tudo pela UI, porque é isso que testam; no scaffold,
+que só tem essas specs, o `globalSetup` ainda não é necessário.
 
 Seletores: `getByRole`, `getByLabel`, `getByText`. `data-testid` só
 quando não houver alternativa acessível.

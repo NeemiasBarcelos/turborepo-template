@@ -134,6 +134,7 @@ Bun workspaces. **Um único lockfile**: `bun.lock` na raiz.
     "@biomejs/biome": "…",
     "@commitlint/cli": "…",
     "@commitlint/config-conventional": "…",
+    "@types/bun": "…",
     "husky": "…",
     "turbo": "…",
     "typescript": "…"
@@ -160,6 +161,45 @@ Bun workspaces. **Um único lockfile**: `bun.lock` na raiz.
   colocaria o `next` no Bun, e a Vercel roda o Next em Node. A opção vive
   só em `apps/api/bunfig.toml`.
 
+### Versões validadas
+
+O `"…"` dos snippets não quer dizer "qualquer versão". As docs foram
+validadas num scaffold real com as majors abaixo. Um scaffold novo instala
+o `latest` de cada pacote e **confere a major com esta tabela**. Major
+diferente da tabela (ex: `typescript@latest` virou o port nativo) é sinal
+de que algum snippet pode estar desatualizado: ler o changelog da lib antes
+de seguir e, se precisar de correção, registrar como achado para a
+baseline.
+
+| Pacote | Versão validada | Onde | Observação |
+|---|---|---|---|
+| Bun | 1.3.11 | raiz | `.bun-version` + `packageManager` |
+| Node | 24 | web (Vercel) | `.nvmrc` |
+| `typescript` | 7.0.x | raiz | port nativo |
+| `turbo` | 2.11.x | raiz | `agentGuidance: false` (ver abaixo) |
+| `@biomejs/biome` | 2.5.x | raiz | `"preset": "recommended"` |
+| `next` / `react` | 16.4.x / 19.3.x | web | sem `cacheComponents` |
+| `tailwindcss` | 4.3.x | web | via `@tailwindcss/turbopack` |
+| `shadcn` | 4.x | web | base `radix`, pacote `cn` |
+| `ky` | 2.x | web | `baseUrl`, `error.data` |
+| `@tanstack/react-query` | 5.x | web | |
+| `react-hook-form` | 7.x | web | com `Field` do shadcn |
+| `nuqs` | 2.x | web | |
+| `vitest` | 5.x | web | |
+| `msw` | 3.x | web | `onUnhandledFrame` |
+| `jsdom` | 30.x | web | |
+| `@testing-library/jest-dom` | 7.x | web | |
+| `@playwright/test` | 1.64.x | web | |
+| `elysia` | 1.4.x | api | `@elysia/cors`, `@elysia/openapi` 1.4 |
+| `better-auth` / `auth` (CLI) | 1.7.x | api, web | CLI `auth` na **mesma** versão do core |
+| `drizzle-orm` / `drizzle-kit` | 0.45.x / 0.31.x | api | |
+| `postgres` | 3.4.x | api | |
+| `pino` | 10.x | api | |
+| `zod` | 4.x | todos | mesma versão nos três workspaces |
+
+Ao subir uma major de propósito, a PR atualiza esta tabela e os snippets
+afetados (`docs/checklists.md`, "## Subir Bun, Node ou `neonctl`").
+
 ## Pipeline do Turborepo
 
 ```jsonc
@@ -167,6 +207,7 @@ Bun workspaces. **Um único lockfile**: `bun.lock` na raiz.
 {
   "$schema": "https://turborepo.com/schema.json",
   "ui": "tui",
+  "agentGuidance": false,
   "globalDependencies": [".bun-version"],
   "globalEnv": ["NODE_ENV"],
   "tasks": {
@@ -211,6 +252,10 @@ Bun workspaces. **Um único lockfile**: `bun.lock` na raiz.
 }
 ```
 
+- **`agentGuidance: false`.** O turbo 2.11+ cria (e recria) um
+  `AGENTS.md` na raiz quando detecta um agente de IA. A raiz deste
+  template já tem `CLAUDE.md` como guia único, então o recurso fica
+  desligado. O `apps/web/AGENTS.md` (gerado pelo Next) continua versionado.
 - **Lint e format não passam pelo turbo.** O Biome roda uma vez na raiz
   (`bun run lint`/`bun run check`), e é mais rápido assim do que N
   execuções por workspace.
@@ -277,12 +322,16 @@ ciclo". No monorepo, a cópia acaba: os dois apps importam deste pacote.
 ```
 packages/contracts/
 ├── package.json
-├── tsconfig.json          # estende @repo/tsconfig/base.json
+├── tsconfig.json          # estende @repo/tsconfig/base.json, types: ["bun"]
 └── src/
     ├── errors.ts          # apiErrorSchema, ApiErrorBody
     ├── permissions.ts     # permissions, Role, Action, can()
+    ├── permissions.test.ts
     ├── roles.ts           # moduleRoles (valores do enum de role por módulo)
-    ├── modules.ts         # nomes dos módulos de negócio
+    ├── modules.ts         # módulos com role própria: ['users', ...]
+    ├── session.ts         # sessionSchema (resposta de /api/auth/get-session)
+    ├── users.ts           # contrato base do módulo de administração de roles
+    ├── organizations.ts   # transfer-ownership
     └── <modulo>.ts        # schemas Zod de request/response de cada módulo
 ```
 
@@ -307,10 +356,26 @@ packages/contracts/
     "zod": "…"
   },
   "devDependencies": {
-    "@repo/tsconfig": "workspace:*"
+    "@repo/tsconfig": "workspace:*",
+    "@types/bun": "…"
   }
 }
 ```
+
+```jsonc
+// packages/contracts/tsconfig.json
+{
+  "extends": "@repo/tsconfig/base.json",
+  "compilerOptions": {
+    // os testes do pacote usam bun:test; o código de src/ não depende do Bun
+    "types": ["bun"]
+  },
+  "include": ["src"]
+}
+```
+
+Sem `types: ["bun"]` e `@types/bun`, o `tsc --noEmit` do pacote falha em
+`permissions.test.ts` com `TS2307: Cannot find module 'bun:test'`.
 
 Pacote **just-in-time**: exporta TypeScript direto, sem build. O Bun
 executa TS nativamente. O Next transpila o pacote se ele estiver em
@@ -338,11 +403,102 @@ export type ModuleRole = (typeof moduleRoles)[number]
 ```
 
 ```ts
+// packages/contracts/src/modules.ts
+/**
+ * Módulos que têm role própria em `user_module_roles`. Mesmo nome em
+ * apps/api/src/modules, apps/web/src/features e packages/contracts/src.
+ * `users` é o módulo de administração (roles por módulo).
+ */
+export const modules = ['users'] as const
+export type Module = (typeof modules)[number]
+```
+
+```ts
 // apps/api/src/db/schema/roles.ts
 import { moduleRoles } from '@repo/contracts/roles'
+import { modules } from '@repo/contracts/modules'
 import { pgEnum } from 'drizzle-orm/pg-core'
 
 export const moduleRole = pgEnum('module_role', moduleRoles)
+export const moduleName = pgEnum('module_name', modules)
+```
+
+Cada módulo de negócio novo entra no array `modules` (e gera migration do
+enum `module_name`) na mesma PR que cria o módulo.
+
+#### Contrato base do scaffold
+
+Todo scaffold já nasce com estes arquivos, porque a API da baseline expõe
+os endpoints de administração de roles e de transferência de dono
+(`apps/api/docs/architecture.md`, "### Gerenciamento de roles e membros"):
+
+```ts
+// packages/contracts/src/users.ts
+import { z } from 'zod/v4'
+import { modules } from './modules'
+import { moduleRoles } from './roles'
+
+export const moduleSchema = z.enum(modules)
+export const moduleRoleSchema = z.enum(moduleRoles)
+
+export const userModuleRoleSchema = z.object({
+	userId: z.uuid(),
+	module: moduleSchema,
+	role: moduleRoleSchema,
+})
+export type UserModuleRole = z.infer<typeof userModuleRoleSchema>
+
+export const listUserRolesResponseSchema = z.object({
+	items: z.array(userModuleRoleSchema),
+})
+
+export const userRoleParamsSchema = z.object({
+	userId: z.uuid(),
+	module: moduleSchema,
+})
+
+export const assignUserRoleRequestSchema = z.object({
+	role: moduleRoleSchema,
+})
+
+/** Roles do usuário logado na organização ativa, por módulo (o web usa com `can`). */
+export const myRolesResponseSchema = z.object({
+	organizationId: z.uuid(),
+	isOwner: z.boolean(),
+	roles: z.record(moduleSchema, moduleRoleSchema),
+})
+export type MyRoles = z.infer<typeof myRolesResponseSchema>
+```
+
+```ts
+// packages/contracts/src/organizations.ts
+import { z } from 'zod/v4'
+
+/** Módulo `organizations`: o que não é endpoint do plugin do Better Auth. */
+export const transferOwnershipRequestSchema = z.object({
+	userId: z.uuid(),
+})
+
+export const transferOwnershipResponseSchema = z.object({
+	organizationId: z.uuid(),
+	ownerUserId: z.uuid(),
+})
+```
+
+```ts
+// packages/contracts/src/session.ts
+import { z } from 'zod/v4'
+
+/**
+ * Resposta de GET /api/auth/get-session (Better Auth), só com os campos que
+ * o web usa. Sem sessão, o endpoint devolve `null`: o web valida com
+ * `sessionSchema.nullable()`.
+ */
+export const sessionSchema = z.object({
+	session: z.object({ activeOrganizationId: z.string().nullish() }),
+	user: z.object({ id: z.string(), name: z.string(), email: z.string() }),
+})
+export type Session = z.infer<typeof sessionSchema>
 ```
 
 **O que entra** em `contracts`:
@@ -355,6 +511,8 @@ export const moduleRole = pgEnum('module_role', moduleRoles)
   `contracts`, e não o contrário.
 - Schemas Zod de **request e response** que atravessam a rede, um arquivo
   por módulo, com o mesmo nome do módulo nos dois apps.
+- O schema mínimo da sessão (`session.ts`): é resposta da API ao web,
+  mesmo vindo do Better Auth, e o web a valida na fronteira.
 
 **O que não entra**:
 
@@ -568,3 +726,43 @@ nunca `--no-verify`, banco local só, migration nunca por `push`).
 origem (rejeitado: diverge da convenção `<tipo>/<slug>` do commitlint e
 do título da PR); `tasks/` fora do git (rejeitado: num repo só, spec e
 decisões servem de histórico na própria PR).
+
+### Tabela de majors validadas, não versões soltas
+
+**Decisão**: `docs/architecture.md`, "### Versões validadas", fixa a
+major de cada dependência com que as docs foram conferidas num scaffold
+real. Scaffold novo instala o `latest` e compara com a tabela.
+**Contexto**: na primeira rodada de scaffold (v0.2.0), `typescript@latest`
+já era o 7 (port nativo), e `vitest` 5, `msw` 3, `ky` 2, `jsdom` 30,
+Better Auth 1.7 e `shadcn` 4 tinham mudado APIs que os snippets usavam.
+Sem referência de versão, ninguém sabia se um erro era bug da doc ou da
+lib.
+**Alternativas consideradas**: fixar versões exatas nos snippets
+(rejeitado: envelhece a cada release e a instância herdaria versões
+velhas); "sempre latest" sem tabela (rejeitado: é o cenário que gerou os
+achados).
+
+### `agentGuidance: false` no `turbo.json`
+
+**Decisão**: o turbo não gera o `AGENTS.md` da raiz.
+**Contexto**: o turbo 2.11 cria (e recria se for apagado) um `AGENTS.md`
+na raiz quando detecta um agente. A raiz já tem o `CLAUDE.md` como guia
+único, e um segundo arquivo de instruções gerado pela ferramenta
+competiria com ele. O `apps/web/AGENTS.md`, gerado pelo Next, continua
+versionado e importado pelo `apps/web/CLAUDE.md`.
+**Alternativas consideradas**: versionar o `AGENTS.md` da raiz e
+importá-lo no `CLAUDE.md` (rejeitado: o conteúdo só manda ler as docs
+empacotadas do turbo, o que o `CLAUDE.md` já cobre).
+
+### Schema da sessão no `contracts`
+
+**Decisão**: `sessionSchema` (resposta de `GET /api/auth/get-session`)
+vive em `packages/contracts/src/session.ts`, só com os campos que o web
+usa.
+**Contexto**: o snippet de `auth-server.ts` do web citava um "tipo
+exportado do schema de sessão" que não existia em lugar nenhum. A
+resposta vem do Better Auth, mas atravessa a rede da API para o web, e a
+regra não-negociável põe todo schema de resposta no `contracts`.
+**Alternativas consideradas**: schema no `apps/web/src/lib/auth-server.ts`
+(rejeitado: abriria exceção à regra do contrato); usar o tipo inferido do
+client do Better Auth (rejeitado: tipo não valida em runtime).

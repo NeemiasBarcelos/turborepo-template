@@ -91,13 +91,53 @@ export const tasksRoutes = new Elysia({ prefix: '/tasks' })
   });
 ```
 
+No monorepo, o web manda `/api/*` para a API (rewrite), então toda rota de
+módulo fica sob o prefixo `/api`. O app é montado em `app.ts`, sem
+`.listen()`, para os testes de contrato chamarem `app.handle(request)`; o
+`index.ts` só sobe o servidor e registra o shutdown:
+
+```ts
+// app.ts
+import { Elysia } from 'elysia';
+import { tasksRoutes } from '@/modules/tasks/tasks.routes';
+import { authHandlerPlugin } from '@/plugins/auth';
+import { corsPlugin } from '@/plugins/cors';
+import { errorHandlerPlugin } from '@/plugins/error-handler';
+import { healthPlugin } from '@/plugins/health';
+import { openapiPlugin } from '@/plugins/openapi';
+import { rateLimitPlugin } from '@/plugins/rate-limit';
+
+// rotas de negócio sob /api; o rate limit por IP vale só para elas
+const api = new Elysia({ prefix: '/api' })
+  .use(rateLimitPlugin)
+  .use(tasksRoutes);
+
+export const app = new Elysia({ serve: { maxRequestBodySize: 1024 * 1024 } })
+  .use(errorHandlerPlugin)
+  .use(corsPlugin)
+  .use(openapiPlugin)
+  .use(healthPlugin)        // /health e /ready na raiz, fora de /api
+  .use(authHandlerPlugin)   // /api/auth/* (Better Auth)
+  .use(api);
+```
+
 ```ts
 // index.ts
-import { Elysia } from 'elysia';
+import { app } from '@/app';
+import { client } from '@/lib/db';
 import { env } from '@/lib/env';
-import { tasksRoutes } from '@/modules/tasks/tasks.routes';
+import { logger } from '@/lib/logger';
+import { redis } from '@/lib/redis';
+import { registerShutdown } from '@/lib/shutdown';
 
-new Elysia().use(tasksRoutes).listen(env.PORT);
+app.listen(env.PORT);
+logger.info({ port: env.PORT }, 'api listening');
+
+registerShutdown(async () => {
+  await app.stop(); // para de aceitar conexões; requests em andamento terminam
+  await client.end({ timeout: 5 }); // postgres.js: espera queries e fecha o pool
+  redis.close();
+});
 ```
 
 Os snippets desta documentação são ilustrativos: não seguem à risca o
@@ -140,6 +180,7 @@ Fluxo: `<module>.routes.ts (wiring HTTP) → feature (input/output schema) → s
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { env } from '@/lib/env';
+import { logger } from '@/lib/logger';
 import * as schema from '@/db/schema';
 
 export const client = postgres(env.DATABASE_URL, {
@@ -147,6 +188,8 @@ export const client = postgres(env.DATABASE_URL, {
   prepare: false, // o pooler do Neon (PgBouncer, modo transação) não suporta PREPARE
   idle_timeout: 20, // fecha conexão ociosa (segundos) antes que o pooler o faça
   connect_timeout: 15, // tolera o cold start do scale-to-zero (segundos)
+  // o padrão do postgres.js é console.log a cada NOTICE (ex: truncate … cascade nos testes)
+  onnotice: (notice) => logger.debug({ notice: notice.message }, 'postgres notice'),
 });
 export const db = drizzle(client, { schema });
 ```
@@ -496,7 +539,23 @@ no CI, onde não há pooler, ela é opcional e o tooling cai em
 `DATABASE_URL`.
 
 Toda variável da tabela precisa estar no `.env.example` da instância (sem
-valor real). O job `test` do CI (`docs/ci-cd.md`) fixa as obrigatórias
+valor real). As **opcionais** entram **comentadas**, nunca como `KEY=`
+vazio: o fluxo local é `cp .env.example .env.local`, e uma chave vazia chega
+ao schema como `''`, que `z.url().optional()` recusa. `BETTER_AUTH_SECRET`
+fica vazio com um comentário mandando gerar (a API não sobe sem ele):
+
+```bash
+# apps/api/.env.example (trecho)
+# gerar por ambiente: openssl rand -base64 32 (a API não sobe sem 32+ caracteres)
+BETTER_AUTH_SECRET=
+BETTER_AUTH_URL=http://localhost:3333
+TRUSTED_ORIGINS=http://localhost:3000
+
+# opcionais: descomentar só com valor (vazio falha na validação)
+# DATABASE_URL_UNPOOLED=
+# CLIENT_IP_HEADER=
+# OTEL_EXPORTER_OTLP_ENDPOINT=
+``` O job `test` do CI (`docs/ci-cd.md`) fixa as obrigatórias
 como `env:` do job, porque `lib/env.ts` falha na inicialização sem elas.
 
 ### Arquivos .env
@@ -523,7 +582,11 @@ apontar caminho manualmente:
   REDIS_URL=redis://localhost:6379/1
   BETTER_AUTH_SECRET=test-secret-not-for-production-0123456789
   BETTER_AUTH_URL=http://localhost:3333
+  TRUSTED_ORIGINS=http://localhost:3000
   ```
+
+  O `TRUSTED_ORIGINS` serve ao E2E do web, que sobe a API com este
+  arquivo.
 
 - **`.env.example`** — documenta todas as vars existentes, sem valor real.
   Não é carregado automaticamente (não segue a convenção que o Bun
@@ -640,6 +703,66 @@ rotas públicas, por `(organization_id, user_id)` em rotas autenticadas. Excedeu
 de erros"). O IP do cliente atrás de proxy/load balancer não é o do socket
 — ver "## Produção: proxy, CORS e limites".
 
+```ts
+// lib/rate-limit.ts
+import { TooManyRequestsError } from '@/lib/errors';
+import { logger } from '@/lib/logger';
+import { redis } from '@/lib/redis';
+
+export type RateLimitRule = { limit: number; windowSeconds: number };
+
+/** Limite por IP nas rotas públicas e por `(organization_id, user_id)` nas de negócio. */
+export const rateLimits = {
+  public: { limit: 120, windowSeconds: 60 },
+  tenant: { limit: 300, windowSeconds: 60 },
+} satisfies Record<string, RateLimitRule>;
+
+/** Fail-open: com o Redis fora do ar, o rate limit é pulado (com aviso no log). */
+export async function hitRateLimit(key: string, rule: RateLimitRule) {
+  let count: number;
+  try {
+    count = await redis.incr(key);
+    await redis.send('EXPIRE', [key, String(rule.windowSeconds), 'NX']);
+  } catch (err) {
+    logger.warn({ err }, 'rate limit unavailable, failing open');
+    return;
+  }
+  if (count > rule.limit) throw new TooManyRequestsError();
+}
+```
+
+```ts
+// plugins/rate-limit.ts — usado só no grupo /api de app.ts
+import { Elysia } from 'elysia';
+import { getClientIp } from '@/lib/client-ip';
+import { hitRateLimit, rateLimits } from '@/lib/rate-limit';
+
+export const rateLimitPlugin = new Elysia({ name: 'rate-limit' }).onBeforeHandle(
+  { as: 'global' },
+  async ({ request, server }) => {
+    const ip = getClientIp(request, server);
+    if (!ip) return;
+    await hitRateLimit(`rl:ip:${ip}`, rateLimits.public);
+  },
+);
+```
+
+A chave `(organization_id, user_id)` é contada dentro do macro `tenant`
+(`plugins/auth.ts`, ver "### Tenant: organização ativa e contexto"), depois
+de resolver a sessão: `rl:t:<organization_id>:<user_id>`.
+
+Padrões da baseline (a instância ajusta os números sem bump):
+
+- **Limites**: 120 req/min por IP nas rotas sob `/api`; 300 req/min por
+  usuário em cada organização nas rotas `tenant: true`.
+- **`/api/auth/*` fica fora** do plugin da API: o `authHandlerPlugin` é
+  registrado no app antes do grupo `/api`, então o hook não o alcança. O
+  Better Auth tem rate limit próprio (login, sign-up, reset) que já usa o
+  `secondaryStorage` (Redis) e o IP repassado pelo `authHandlerPlugin`.
+- **Fail-open**: Redis fora do ar não derruba a API; o rate limit é pulado
+  com `logger.warn` e o `/ready` acusa o problema. Instância que precisar
+  de fail-closed registra a decisão em `docs/domain.md`.
+
 `EXPIRE ... NX` (Redis ≥ 7.0 — a baseline usa `redis:7`) só define o TTL se
 a chave ainda não tem um. Isso é mais seguro que "`EXPIRE` só quando
 `INCR` devolve 1": `INCR` e `EXPIRE` são dois comandos, e se o processo cair
@@ -656,7 +779,13 @@ Isso exige uma flag explícita: por padrão, quando `secondaryStorage` é
 configurado, o Better Auth guarda a sessão **só** no Redis, não no Postgres
 — o oposto do que a regra "Redis nunca é fonte de verdade" exige. A opção
 `session.storeSessionInDatabase: true` é o que garante o comportamento
-documentado acima (Postgres sempre grava, Redis é só cache):
+documentado acima (Postgres sempre grava, Redis é só cache).
+
+O mesmo vale para os tokens de verificação (confirmação de e-mail, reset
+de senha): com `secondaryStorage`, o Better Auth 1.7 guarda verificações
+**só** no Redis e nem gera a tabela `verifications`. A opção
+`verification.storeInDatabase: true` mantém a tabela e o Postgres como
+fonte de verdade:
 
 ```ts
 // lib/auth.ts
@@ -664,6 +793,9 @@ export const auth = betterAuth({
   // ...
   session: {
     storeSessionInDatabase: true, // Postgres continua fonte de verdade
+  },
+  verification: {
+    storeInDatabase: true, // idem para tokens de verificação e reset de senha
   },
   secondaryStorage: {
     get: (key) => redis.get(key),
@@ -724,8 +856,8 @@ baseline fixa:
   fecha a conexão por ociosidade e não reconecta sozinho).
 - Redis fora do ar não corrompe nada (nunca é fonte de verdade), mas cache
   e rate limit ficam indisponíveis: `/ready` devolve 503 (ver
-  "## Health check") e a decisão de fail-open/fail-closed do rate limit é
-  da instância, registrada em `docs/features/`.
+  "## Health check"). O rate limit é fail-open por padrão (acima); trocar
+  para fail-closed é decisão da instância, registrada em `docs/domain.md`.
 
 ## Autenticação e autorização
 
@@ -751,6 +883,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { organization } from 'better-auth/plugins';
 import { memberAc, ownerAc } from 'better-auth/plugins/organization/access';
 import { asc, eq } from 'drizzle-orm';
+import { INTERNAL_CLIENT_IP_HEADER } from '@/lib/client-ip';
 import { db } from '@/lib/db';
 import { env } from '@/lib/env';
 import { ForbiddenError } from '@/lib/errors';
@@ -773,8 +906,9 @@ export const auth = betterAuth({
     },
     useSecureCookies: env.NODE_ENV === 'production',
     ipAddress: {
-      // só com proxy confiável na frente — ver "## Produção: proxy, CORS e limites"
-      ipAddressHeaders: env.CLIENT_IP_HEADER ? [env.CLIENT_IP_HEADER] : undefined,
+      // header interno preenchido pelo authHandlerPlugin com getClientIp
+      // (respeita CLIENT_IP_HEADER) — ver "## Produção: proxy, CORS e limites"
+      ipAddressHeaders: [INTERNAL_CLIENT_IP_HEADER],
     },
   },
   plugins: [
@@ -812,11 +946,24 @@ export const auth = betterAuth({
       },
     },
   },
-  // + session.storeSessionInDatabase e secondaryStorage, ver "## Redis"
+  // + session.storeSessionInDatabase, verification.storeInDatabase e
+  // secondaryStorage, ver "## Redis"
 });
 ```
 
-Rodar `bunx @better-auth/cli generate` **depois** de configurar `usePlural`,
+O gerador de schema é a CLI **`auth`** (pacote `auth`, devDependency
+fixada na **mesma versão** do `better-auth`). O pacote antigo
+`@better-auth/cli` parou na 1.4 e gera schema para o core 1.4; o próprio
+core 1.7 avisa "Run `npx auth generate`". Comando, sem prompt:
+
+```bash
+bunx --bun auth generate --config src/lib/auth.ts --output src/db/schema/auth.ts --yes
+```
+
+O `--bun` faz o Bun carregar o `.env.local` (o `lib/auth.ts` importa o
+`lib/env.ts`, que falha sem as variáveis).
+
+Rodar o `generate` **depois** de configurar `usePlural`,
 `generateId: 'uuid'` e o plugin `organization` acima — o gerador lê essa
 configuração e já emite `uuid('id')`, nomes de tabela no plural e as tabelas
 do plugin (`organizations`, `members`, `invitations`, mais a coluna
@@ -852,16 +999,34 @@ controla esse detalhe. Depois de rodar `generate`, editar à mão os campos
 adicionar `{ withTimezone: true }` — e reaplicar esse ajuste sempre que o
 schema for regenerado (o comando reescreve o arquivo inteiro).
 
-Outra exceção real, também sem solução via configuração: a tabela
-`accounts` ganhou a coluna `issuer` (`text`, obrigatória) no core do
-Better Auth a partir da v1.7 — usada junto com `accountId` como índice
-único composto pra identificar a conta externa. O gerador do CLI pode
-ficar defasado em relação ao core instalado e não emitir essa coluna
-mesmo com o core já exigindo ela em runtime, causando erro 500 real no
-sign-up até adicionar a coluna à mão e regenerar a migration. Valor
-convencionado pra contas de credential (`emailAndPassword`):
-`local:credential`; pra OAuth/OIDC, o issuer real do provedor (ou
-`local:oauth:<providerId>` quando o provedor não expõe um).
+Depois de cada `generate`, conferir o resultado contra o `schema-diff` do
+core instalado (o core avisa quando o schema do banco diverge do que ele
+espera). Não acrescentar coluna que o core não pede: uma coluna
+obrigatória que o Better Auth nunca escreve faz todo insert daquela tabela
+falhar. Foi o caso da coluna `issuer` em `accounts`, que existiu só entre
+o core 1.7.0 e 1.7.2 e não deve ser criada no 1.7.3+.
+
+#### Regenerar o schema do Better Auth
+
+O `generate` importa `lib/auth.ts` → `lib/db.ts` → `db/schema/index.ts`. Se
+outros arquivos do schema (`user-module-roles.ts`, `tenant.ts`) importam
+`users`/`organizations` de `./auth`, a importação quebra enquanto o
+`auth.ts` está sendo reescrito (`undefined is not an object (evaluating
+'_auth.users.id')`). Passo a passo:
+
+1. Deixar `db/schema/index.ts` exportando só `./auth` (comentar os
+   outros `export *`).
+2. Rodar o `generate` (comando acima).
+3. Restaurar o `index.ts`.
+4. Reaplicar os ajustes manuais no `auth.ts` gerado: `{ withTimezone: true }`
+   nos timestamps, `isOwner` + índice `members_one_owner_uq` em `members`,
+   `uuid` + FK em `sessions.active_organization_id`.
+5. `bun run db:generate` e revisar a migration: ela não pode mexer em nada
+   além do que a mudança do Better Auth pediu.
+
+Os ajustes do passo 4 são fáceis de esquecer. A instância pode versionar
+um script em `apps/api/scripts/` que os reaplica; a baseline ainda não
+fixa um.
 
 Ver seção "## Redis" acima para como a sessão usa Redis como cache de
 leitura na frente do Postgres, sem deixar de ser Postgres a fonte de verdade.
@@ -878,6 +1043,45 @@ plugin** (montados com o resto do Better Auth em `/api/auth/…`) — a baseline
 não reimplementa isso como feature. O que é decisão de produto fica com a
 instância: quem pode criar organização (`allowUserToCreateOrganization`) e
 como o e-mail de convite é enviado.
+
+#### Opção de instância: organização pessoal no cadastro
+
+Para que toda conta nasça com uma organização (e a primeira sessão já tenha
+organização ativa), a organização pessoal é criada **dentro do
+`databaseHooks.session.create.before`**, quando o usuário ainda não tem
+nenhuma membership:
+
+```ts
+// lib/auth.ts — substitui o session.create.before da baseline
+before: async (session) => {
+  const membership = await db.query.members.findFirst({
+    where: eq(schema.members.userId, session.userId),
+    orderBy: asc(schema.members.createdAt),
+  });
+  const activeOrganizationId =
+    membership?.organizationId ?? (await createPersonalOrganization(session.userId));
+  return { data: { ...session, activeOrganizationId } };
+},
+
+// …fora do betterAuth({ … }), no mesmo arquivo
+async function createPersonalOrganization(userId: string): Promise<string | undefined> {
+  const user = await db.query.users.findFirst({ where: eq(schema.users.id, userId) });
+  // anotação explícita: sem ela, `auth` se referencia no próprio inicializador (TS7022)
+  const organization: { id: string } | null = await auth.api.createOrganization({
+    body: { name: user?.name || 'Pessoal', slug: `pessoal-${userId}`, userId },
+  });
+  return organization?.id;
+}
+```
+
+- **Não usar `databaseHooks.user.create.after`** para isso. No sign-up, o
+  `after` do usuário roda **depois** que a sessão já foi criada: a
+  organização nasce, mas a sessão fica com `activeOrganizationId = null`, e
+  a primeira rota `tenant: true` responde 403.
+- `createOrganization` com `body.userId` (chamada server-side, sem headers)
+  cria a organização e o membro `owner` de uma vez.
+- O nome e o slug da organização pessoal são decisão da instância
+  (`docs/domain.md`).
 
 **O dono (`isOwner`).** `members.is_owner` é uma flag booleana: `true` só
 para o proprietário da organização. Há **exatamente um por organização**
@@ -923,7 +1127,10 @@ export async function transferOwnership(newOwnerUserId: string, ctx: TenantConte
 }
 ```
 
-Integração com Elysia via `.mount()` + dois `macro`, com escopos diferentes:
+Integração com Elysia em dois plugins: `authHandlerPlugin` serve o Better
+Auth em `/api/auth/*` (registrado **uma vez**, em `app.ts`), e `authPlugin`
+só declara dois `macro`, com escopos diferentes (cada `<modulo>.routes.ts`
+faz `.use(authPlugin)`):
 
 - **`auth: true`** — só exige sessão válida. É para o que **não** pertence a
   um tenant: listar as minhas organizações, criar uma, trocar a ativa.
@@ -938,46 +1145,71 @@ import { Elysia } from 'elysia';
 import { and, eq } from 'drizzle-orm';
 import { members } from '@/db/schema';
 import { auth } from '@/lib/auth';
+import { getClientIp, INTERNAL_CLIENT_IP_HEADER } from '@/lib/client-ip';
 import { db } from '@/lib/db';
 import { ForbiddenError, UnauthorizedError } from '@/lib/errors';
+import { hitRateLimit, rateLimits } from '@/lib/rate-limit';
 import type { TenantContext } from '@/lib/tenant';
 
-export const authPlugin = new Elysia({ name: 'better-auth' })
-  .mount(auth.handler)
-  .macro({
-    // só sessão válida — listar/criar/trocar organização
-    auth: {
-      async resolve({ request: { headers } }) {
-        const session = await auth.api.getSession({ headers });
-        if (!session) throw new UnauthorizedError();
-        return { user: session.user, session: session.session };
-      },
+/**
+ * Handler do Better Auth só em /api/auth/*. Um `.mount(auth.handler)` sem caminho
+ * captura toda rota inexistente e responde 404 sem corpo, fora do formato de erro.
+ */
+export const authHandlerPlugin = new Elysia({ name: 'better-auth-handler' }).all(
+  '/api/auth/*',
+  ({ request, server }) => {
+    // o IP vem sempre da API: o header interno mandado pelo cliente é descartado
+    const headers = new Headers(request.headers);
+    headers.delete(INTERNAL_CLIENT_IP_HEADER);
+    const ip = getClientIp(request, server);
+    if (ip) headers.set(INTERNAL_CLIENT_IP_HEADER, ip);
+    return auth.handler(new Request(request, { headers }));
+  },
+  { parse: 'none' }, // o Better Auth lê o corpo sozinho
+);
+
+export const authPlugin = new Elysia({ name: 'better-auth' }).macro({
+  // só sessão válida — listar/criar/trocar organização
+  auth: {
+    async resolve({ request: { headers } }) {
+      const session = await auth.api.getSession({ headers });
+      if (!session) throw new UnauthorizedError();
+      return { user: session.user, session: session.session };
     },
-    // sessão + organização ativa + membership — toda rota de negócio
-    tenant: {
-      async resolve({ request: { headers } }) {
-        const session = await auth.api.getSession({ headers });
-        if (!session) throw new UnauthorizedError();
+  },
+  // sessão + organização ativa + membership — toda rota de negócio
+  tenant: {
+    async resolve({ request: { headers } }) {
+      const session = await auth.api.getSession({ headers });
+      if (!session) throw new UnauthorizedError();
 
-        const organizationId = session.session.activeOrganizationId;
-        if (!organizationId) throw new ForbiddenError('Nenhuma organização ativa');
+      const organizationId = session.session.activeOrganizationId;
+      if (!organizationId) throw new ForbiddenError('Nenhuma organização ativa');
 
-        // confirma a membership: activeOrganizationId pode estar velho (membro removido)
-        const member = await db.query.members.findFirst({
-          where: and(eq(members.organizationId, organizationId), eq(members.userId, session.user.id)),
-        });
-        if (!member) throw new ForbiddenError('Você não é membro desta organização');
+      // confirma a membership: activeOrganizationId pode estar velho (membro removido)
+      const member = await db.query.members.findFirst({
+        where: and(eq(members.organizationId, organizationId), eq(members.userId, session.user.id)),
+      });
+      if (!member) throw new ForbiddenError('Você não é membro desta organização');
 
-        const tenant: TenantContext = {
-          userId: session.user.id,
-          organizationId,
-          isOwner: member.isOwner,
-        };
-        return { user: session.user, tenant };
-      },
+      const tenant: TenantContext = {
+        userId: session.user.id,
+        organizationId,
+        isOwner: member.isOwner,
+      };
+      await hitRateLimit(`rl:t:${organizationId}:${session.user.id}`, rateLimits.tenant);
+      return { user: session.user, tenant };
     },
-  });
+  },
+});
 ```
+
+Por que não `.mount(auth.handler)`: sem caminho, o mount responde por
+**qualquer** rota que não existe, e o Better Auth devolve 404 com corpo
+vazio. O branch `NOT_FOUND` do `error-handler` nunca roda, e o cliente
+recebe um 404 fora do formato do contrato. A baseline tem um teste para
+isso: `GET /api/nao-existe` responde 404 com corpo válido em
+`apiErrorSchema`.
 
 Os dois macros **lançam** `UnauthorizedError`/`ForbiddenError` em vez de
 devolver `status(401)`: assim o `.onError` global formata a resposta no mesmo
@@ -1033,8 +1265,8 @@ organizations, members, invitations   (Better Auth — o próprio tenant)
 user_module_roles
   organization_id -> FK organizations
   user_id         -> FK users
-  module          -> "tasks", "billing", etc
-  role            -> "user" | "editor" | "manager" | "admin"   (pgEnum)
+  module          -> pgEnum module_name (array `modules` do @repo/contracts: "users", "tasks"…)
+  role            -> "user" | "editor" | "manager" | "admin"   (pgEnum module_role)
   unique (organization_id, user_id, module)
 ```
 
@@ -1063,7 +1295,7 @@ export function can(role: Role, action: Action) {
   return (permissions[role] as readonly Action[]).includes(action);
 }
 
-export async function resolveRole(ctx: TenantContext, module: string): Promise<Role> {
+export async function resolveRole(ctx: TenantContext, module: Module): Promise<Role> {
   // o dono da organização é 'admin' em qualquer módulo — só dentro desta org
   if (ctx.isOwner) return 'admin';
 
@@ -1126,16 +1358,31 @@ Há três frentes, com donos diferentes:
   Auth, permitidos só ao dono (role `owner` do plugin). O convite entra sempre
   como `member`. Não são features da baseline.
 - **Propriedade**: a feature `transfer-ownership` (acima) — só o dono.
-- **Role por módulo** (`user_module_roles`): CRUD normal, exposto como feature
-  própria (ex: módulo `users`), sempre `tenant: true`:
-  `assign-user-role.ts` / `remove-user-role.ts` / `list-user-roles.ts`.
+- **Role por módulo** (`user_module_roles`): CRUD normal no módulo de
+  administração `users`, sempre `tenant: true`:
+  `assign-user-role.ts` / `remove-user-role.ts` / `list-user-roles.ts`, mais
+  `list-my-roles.ts` (as roles do próprio usuário, que o web usa para
+  esconder ações com `can`).
   Exigem `admin` no módulo de administração — o dono já é. **Conceder a role
   `admin` é reservado ao dono**, para que um admin de módulo não escale outros
   membros a `admin`. Toda query usa `inTenant`, e `assign-user-role` valida
   que o usuário-alvo é **membro da mesma organização** antes de gravar.
 
-O frontend consome tudo isso para montar a tela de administração da
-organização.
+Rotas e contrato fixos da baseline (schemas em `@repo/contracts/users` e
+`@repo/contracts/organizations`, ver `../../docs/architecture.md`, "####
+Contrato base do scaffold"):
+
+| Método e rota | Feature | Contrato |
+|---|---|---|
+| `GET /api/users/me/roles` | `list-my-roles` (sem service: compõe `resolveRole` para cada item de `modules`) | `myRolesResponseSchema` |
+| `GET /api/users/roles` | `list-user-roles` | `listUserRolesResponseSchema` |
+| `PUT /api/users/:userId/roles/:module` | `assign-user-role` | `userRoleParamsSchema`, `assignUserRoleRequestSchema` → `userModuleRoleSchema` |
+| `DELETE /api/users/:userId/roles/:module` | `remove-user-role` (204) | `userRoleParamsSchema` |
+| `POST /api/organizations/transfer-ownership` | `transfer-ownership` | `transferOwnershipRequestSchema` → `transferOwnershipResponseSchema` |
+
+`users` é o primeiro item de `modules` no contracts e o módulo cujo `admin`
+administra as roles. O frontend consome tudo isso para montar a tela de
+administração da organização.
 
 **Primeiro admin**: não há bootstrap nem seed. Quem cria a organização vira o
 dono — `admin` em todos os módulos — e a partir daí convida os demais e
@@ -1430,8 +1677,8 @@ Isso muda o que o processo enxerga, e a baseline fixa o seguinte:
 o do cliente — sem tratamento, o rate limit "por IP" coloca todos os
 usuários no mesmo bucket. `CLIENT_IP_HEADER` (ex: `x-real-ip`,
 `cf-connecting-ip`, `fly-client-ip`) aponta o header que o proxy da
-instância **sobrescreve**; o mesmo valor alimenta o rate limit e o
-`advanced.ipAddress.ipAddressHeaders` do Better Auth:
+instância **sobrescreve**. `getClientIp` é a fonte única do IP, para o
+rate limit da API e para o do Better Auth:
 
 ```ts
 // lib/client-ip.ts
@@ -1444,8 +1691,19 @@ export function getClientIp(request: Request, server: ServerLike) {
   const forwarded = header ? request.headers.get(header)?.trim() : undefined;
   return forwarded || server?.requestIP(request)?.address || null;
 }
+
+/** Header interno com o IP já resolvido, repassado ao Better Auth. */
+export const INTERNAL_CLIENT_IP_HEADER = 'x-internal-client-ip';
 ```
 
+O Elysia entrega ao Better Auth uma `Request` sem IP. Sem um header que o
+Better Auth consiga ler, o rate limit embutido dele (login, sign-up) vira
+**um balde só para todo mundo**, e o 1.7 avisa a cada request ("Rate
+limiting could not determine a client IP…"). Por isso o
+`authHandlerPlugin` (`plugins/auth.ts`) apaga qualquer
+`x-internal-client-ip` vindo do cliente, grava o IP de `getClientIp` e o
+`lib/auth.ts` usa `ipAddressHeaders: [INTERNAL_CLIENT_IP_HEADER]`. O cliente
+não consegue forjar o header, e os dois rate limits usam o mesmo IP.
 Só definir `CLIENT_IP_HEADER` quando o proxy realmente sobrescreve esse
 header (nunca repassa o valor do cliente) — caso contrário qualquer cliente
 forja o IP e contorna o rate limit. Preferir um header de valor único a
@@ -1478,7 +1736,7 @@ documentação do Elysia — é `@elysia/*`.
 "## Autenticação e autorização").
 
 **Limite de body.** O padrão do Bun/Elysia é 128 MB por request; a baseline
-fixa 1 MB (`serve.maxRequestBodySize`, ver `index.ts` acima). Feature de
+fixa 1 MB (`serve.maxRequestBodySize`, ver `app.ts` acima). Feature de
 upload sobe o limite por instância e registra o motivo.
 
 **Segredos.** Nunca na imagem, em `ENV` ou `ARG` do Dockerfile — a
@@ -1608,14 +1866,14 @@ que o próprio gerador do CLI lê para emitir o schema já correto. Duas
 limitações reais permanecem, sem solução via configuração:
 - o gerador nunca emite `{ withTimezone: true }` nos campos de timestamp
   (hardcoded no código-fonte);
-- a coluna `issuer` da tabela `accounts` (obrigatória a partir do core
-  Better Auth v1.7, parte do índice único `issuer` + `accountId`) pode
-  não ser emitida pelo gerador do CLI quando ele está defasado em
-  relação ao core instalado — confirmado num scaffold real
-  (`@better-auth/cli@1.4.21` vs. core `1.7.1`), com erro 500 real no
-  sign-up até adicionar a coluna à mão.
+- *(removido no turborepo-template 0.3.0)* a coluna `issuer` em
+  `accounts`: só existiu no core 1.7.0–1.7.2, e o erro vinha de usar a
+  CLI antiga `@better-auth/cli` (1.4) com o core 1.7. Com a CLI `auth` na
+  mesma versão do core, ela não é emitida nem deve ser acrescentada: uma
+  coluna obrigatória que o Better Auth não escreve quebra todo insert em
+  `accounts`.
 
-Os dois ajustes continuam manuais, pós-`generate`.
+O ajuste de timezone continua manual, pós-`generate`.
 **Alternativas consideradas**: aceitar `text`/singular como exceção
 documentada para as tabelas do Better Auth (rejeitado — era a suposição
 inicial, baseada em como um scaffold de teste rodou sem configurar essas
@@ -1659,8 +1917,9 @@ tinha correção de infra simples).
 
 ### session.storeSessionInDatabase: true — sem isso, Redis vira a fonte de verdade
 
-**Decisão**: fixar `session.storeSessionInDatabase: true` na config do
-Better Auth como parte não-negociável de "## Redis" / seção "Sessão do
+**Decisão**: fixar `session.storeSessionInDatabase: true` (e, desde o
+turborepo-template 0.3.0, `verification.storeInDatabase: true`) na config
+do Better Auth como parte não-negociável de "## Redis" / seção "Sessão do
 Better Auth" — não é detalhe opcional, é o que garante a regra "Redis
 nunca é fonte de verdade" na prática.
 **Contexto**: a doc já afirmava que "Postgres continua sendo a fonte de
@@ -1676,6 +1935,11 @@ como cache (não fonte de verdade) de sessão sem essa flag; a alternativa
 seria não usar `secondaryStorage` pra sessão, o que contradiria a decisão
 já tomada de ter Redis cacheando leitura de sessão (ver "Redis como parte
 oficial da stack" acima).
+*Atualizado no turborepo-template 0.3.0:* o Better Auth 1.7 faz o mesmo com
+as verificações (confirmação de e-mail, reset de senha): com
+`secondaryStorage`, elas ficam só no Redis e a tabela `verifications` nem é
+gerada. `verification.storeInDatabase: true` mantém a tabela e o Postgres
+como fonte de verdade.
 
 ### Admin como role global (user_global_roles), não flag booleana
 
@@ -2036,9 +2300,11 @@ de cada acesso; operação de plataforma fica fora da API).
     ```ts
     // apps/api/src/db/schema/roles.ts
     import { moduleRoles } from '@repo/contracts/roles'
+    import { modules } from '@repo/contracts/modules'
     import { pgEnum } from 'drizzle-orm/pg-core'
 
     export const moduleRole = pgEnum('module_role', moduleRoles)
+    export const moduleName = pgEnum('module_name', modules)
     ```
 
     A regra "nunca duplicar o array" continua valendo. A fonte única
@@ -2059,3 +2325,33 @@ de cada acesso; operação de plataforma fica fora da API).
 - **`TRUSTED_ORIGINS`**: local, `http://localhost:3000` (o web do mesmo
   repo). Staging, o domínio de preview fixo da Vercel. Produção, o
   domínio do web.
+- **Prefixo `/api`**: os módulos ficam num grupo `new Elysia({ prefix:
+  '/api' })` em `src/app.ts`; `/health` e `/ready` ficam na raiz e o
+  Better Auth em `/api/auth/*`. `src/index.ts` só faz `listen` + shutdown
+  (ver "## Estrutura: Modules + Features").
+- **Módulos de base**: o scaffold já traz `modules/users` (roles por
+  módulo, `GET /api/users/me/roles`) e `modules/organizations`
+  (`transfer-ownership`), com o contrato em `@repo/contracts/users` e
+  `@repo/contracts/organizations` (ver "### Gerenciamento de roles e
+  membros").
+
+### Correções à frente do api-bun v0.16.0
+
+Achados do primeiro scaffold (turborepo-template 0.3.0) corrigidos aqui e
+ainda **não** levados ao api-bun. Na próxima sincronização, não
+sobrescrever estes trechos com a versão de origem sem conferir se o
+api-bun já os incorporou (lista também em `../../docs/CHANGELOG.md`):
+
+- CLI `auth` no lugar de `@better-auth/cli`, sem a coluna `issuer`, e o
+  passo a passo de regeneração ("## Autenticação e autorização").
+- `verification.storeInDatabase: true` ("## Redis").
+- `authHandlerPlugin` em `/api/auth/*` separado do `authPlugin`, com o IP
+  repassado pelo header interno ("### Tenant…", "## Produção…").
+- Padrão "organização pessoal" no `session.create.before`.
+- Rate limit: snippet, limites padrão, fail-open e `/api/auth/*` fora.
+- `onnotice` do postgres.js no `lib/db.ts`.
+- `module_name` como `pgEnum`, rotas do módulo `users`.
+- `.env.example` com opcionais comentadas; `TRUSTED_ORIGINS` no
+  `.env.test`.
+- Logger silencioso em teste (`docs/observability.md`) e helpers/setup de
+  teste (`docs/testing.md`).

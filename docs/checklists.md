@@ -82,6 +82,10 @@ app-nextjs.
       apontando para a API de staging (`docs/deploy.md`).
 - [ ] Serviços `api-staging` e `api-production` no host, com auto-deploy
       por Git **desligado** e health check em `/health`.
+- [ ] Credencial do GHCR (`read:packages`) cadastrada no host: a imagem é
+      privada por padrão (`docs/deploy.md`, "### Host da API").
+- [ ] Passo de deploy do `api-deploy.yml` trocado pelo do host, e o
+      secret dele (ex: `RENDER_DEPLOY_HOOK_URL`) por Environment.
 - [ ] Redis gerenciado (`rediss://`) para staging e produção.
 - [ ] Domínio de preview fixo em `TRUSTED_ORIGINS` da API de staging.
 - [ ] Branch protection de `main` configurada.
@@ -113,16 +117,29 @@ app-nextjs.
   - [ ] `CLAUDE.md`, seção "Versão da baseline"
   - [ ] `CLAUDE.md`, rodapé
   - [ ] `README.md`, seção "Status atual"
-- [ ] `grep -rn "0\.[0-9]*\.[0-9]*" CLAUDE.md README.md` sem versão antiga
-      sobrando.
+  - [ ] `apps/web/CLAUDE.md` e `apps/api/CLAUDE.md`, cabeçalho
+        ("adaptado ao monorepo `turborepo-template` vX.Y.Z") e rodapé
+- [ ] `grep -rn "0\.[0-9]*\.[0-9]*" CLAUDE.md README.md apps/*/CLAUDE.md`
+      sem versão antiga do template sobrando (os `Baseado em api-bun` /
+      `app-nextjs` só mudam na sincronização).
 - [ ] Commit `docs(<escopo>): …` (com `!` se breaking) via PR.
 
 ## Subir Bun, Node ou `neonctl`
 
-- [ ] Bun: `.bun-version` **e** `packageManager` do `package.json` da
-      raiz, com o mesmo valor.
+- [ ] Bun: `.bun-version`, `packageManager` do `package.json` da raiz e
+      o default de `ARG BUN_VERSION` do `apps/api/Dockerfile`, com o mesmo
+      valor (e a linha do Bun em `docs/architecture.md`, "### Versões
+      validadas").
 - [ ] Node: `.nvmrc` e a versão configurada na Vercel.
 - [ ] `neonctl`: versão no `ci.yml`, no `neon-cleanup.yml` e em
       `docs/development.md`. Comandos de `docs/neon.md` conferidos com
       `--help`.
 - [ ] CI verde, incluindo `docker`.
+
+## Subir major de uma dependência
+
+- [ ] Changelog da lib lido desde a major validada (`docs/architecture.md`,
+      "### Versões validadas").
+- [ ] Snippets das docs que usam a API alterada corrigidos na mesma PR.
+- [ ] Linha da tabela de versões validadas atualizada.
+- [ ] Mesma versão em todos os workspaces que usam a lib.

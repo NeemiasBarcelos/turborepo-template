@@ -70,11 +70,11 @@ transação.
 // tests/helpers/db.ts
 import { sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
-import { organizations, users } from '@/db/schema';
+import { organizations, users, verifications } from '@/db/schema';
 
 export async function resetDatabase() {
   await db.execute(sql`
-    truncate table ${organizations}, ${users}
+    truncate table ${organizations}, ${users}, ${verifications}
     restart identity cascade
   `);
 }
@@ -85,12 +85,13 @@ citadas. Como toda tabela de negócio tem `organization_id` (FK para
 `organizations`), e `members`, `invitations`, `sessions`, `accounts` e
 `user_module_roles` apontam para `organizations`/`users`, essa única
 instrução esvazia o banco de dados de teste inteiro — sem lista para manter.
+`verifications` entra à mão porque não tem FK (e só existe com
+`verification.storeInDatabase: true`, ver `docs/architecture.md`, "##
+Redis").
 
-```ts
-afterEach(async () => {
-  await resetDatabase();
-});
-```
+O `afterEach` com `resetDatabase()` e o `FLUSHDB` do Redis é **global**, no
+`tests/setup.ts` (preload), logo depois da guarda (ver "### Guarda contra
+rodar teste no banco errado"). Nenhum arquivo de teste repete a limpeza.
 
 Só uma tabela **sem** FK para `organizations`/`users` (exceção rara, ex: uma
 tabela de sistema) precisaria entrar à mão em `resetDatabase()`. Mesmo
@@ -132,6 +133,7 @@ preload = ["./tests/setup.ts"]
 
 ```ts
 // tests/setup.ts
+import { afterEach } from 'bun:test';
 import { env } from '@/lib/env';
 
 const database = new URL(env.DATABASE_URL);
@@ -150,7 +152,21 @@ if (problems.length > 0) {
   for (const problem of problems) console.error(`  - ${problem}`);
   process.exit(1);
 }
+
+// só depois da guarda: estes módulos abrem conexão com o banco e o Redis
+const { resetDatabase } = await import('./helpers/db');
+const { redis } = await import('@/lib/redis');
+
+afterEach(async () => {
+  await resetDatabase();
+  await redis.send('FLUSHDB', []);
+});
 ```
+
+O `import` de `helpers/db` e `lib/redis` é **dinâmico e depois da guarda**:
+um `import` estático no topo abriria a conexão antes da checagem, apontando
+para o banco errado. (`import { afterEach } from 'bun:test'` e
+`import { env } from '@/lib/env'` ficam no topo: não conectam em nada.)
 
 A mensagem imprime só o nome e o host do banco, nunca a URL (que carrega
 usuário e senha). Esse arquivo é código de teste, não de produção — o
@@ -176,7 +192,9 @@ intactas.
 Dois tenants reais no banco de teste, criados por um helper que grava a
 organização, o usuário e a linha de `members`. O dono entra com `role:
 'owner'` — e `is_owner` é gerada pelo banco a partir disso, então o helper
-não escreve a flag:
+não escreve a flag. Os timestamps vão explícitos: o schema gerado pelo
+Better Auth tem `createdAt`/`updatedAt` `NOT NULL` **sem default** (quem
+preenche é o Better Auth), e um insert direto sem eles falha:
 
 ```ts
 // tests/helpers/tenants.ts
@@ -186,12 +204,21 @@ import type { TenantContext } from '@/lib/tenant';
 
 /** `isOwner: true` (padrão) = dono da organização; `false` = membro comum. */
 export async function createTenant(name: string, { isOwner = true } = {}) {
-  const [org] = await db.insert(organizations).values({ name, slug: name }).returning();
-  const [user] = await db.insert(users).values({ email: `${name}@test.dev`, name }).returning();
+  const now = new Date();
+  const [org] = await db
+    .insert(organizations)
+    .values({ name, slug: name, createdAt: now })
+    .returning();
+  const [user] = await db
+    .insert(users)
+    .values({ email: `${name}@test.dev`, name, createdAt: now, updatedAt: now })
+    .returning();
+  if (!org || !user) throw new Error('falha ao criar tenant de teste');
   const [member] = await db
     .insert(members)
-    .values({ organizationId: org.id, userId: user.id, role: isOwner ? 'owner' : 'member' })
+    .values({ organizationId: org.id, userId: user.id, role: isOwner ? 'owner' : 'member', createdAt: now })
     .returning();
+  if (!member) throw new Error('falha ao criar membro de teste');
   const ctx: TenantContext = { userId: user.id, organizationId: org.id, isOwner: member.isOwner };
   return { org, user, ctx };
 }

@@ -18,11 +18,15 @@ versão é PR que muda esta linha e o passo de instalação do `ci.yml`.
 ```bash
 bun install                                  # instala todos os workspaces; ativa o Husky
 docker compose up -d                         # Postgres 16 (app_dev, app_test) + Redis 7
-cp apps/api/.env.example apps/api/.env.local
+cp apps/api/.env.example apps/api/.env.local  # depois: gerar BETTER_AUTH_SECRET (abaixo)
 cp apps/web/.env.example apps/web/.env.local
 bun run db:migrate                           # migrations no app_dev
 bun run dev                                  # web :3000 + api :3333 (TUI do turbo)
 ```
+
+O `.env.example` da API vem com `BETTER_AUTH_SECRET=` vazio, e a API não
+sobe sem 32+ caracteres. Gerar com `openssl rand -base64 32` e colar no
+`apps/api/.env.local` antes do `bun run dev`.
 
 `neonctl auth` e `neonctl link` (`docs/neon.md`, "## Setup do projeto")
 só são necessários para quem vai operar branches do Neon. O dia a dia
@@ -90,7 +94,17 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/app_test
 REDIS_URL=redis://localhost:6379/1
 BETTER_AUTH_SECRET=test-secret-not-a-real-secret-0123456789
 BETTER_AUTH_URL=http://localhost:3333
+TRUSTED_ORIGINS=http://localhost:3000
 ```
+
+O `TRUSTED_ORIGINS` do `.env.test` é para o E2E: o Playwright sobe a API
+com esse arquivo, e sem a origem do web o Better Auth recusa os POSTs do
+browser.
+
+Variável opcional (`DATABASE_URL_UNPOOLED`, `CLIENT_IP_HEADER`,
+`OTEL_EXPORTER_OTLP_ENDPOINT`) fica **comentada** no `.env.example`, nunca
+vazia: `KEY=` chega ao schema como `''`, e `z.url().optional()` recusa
+string vazia.
 
 ```bash
 # apps/web/.env.local
@@ -143,7 +157,38 @@ A configuração do Playwright sobe a API em modo teste (`bun --env-file
 .env.test src/index.ts` em `apps/api`) como segundo `webServer`. Detalhes
 em `apps/web/docs/testing.md`, "## Diferenças no monorepo".
 
+## Geradores sem TTY
+
+Vários geradores usados no scaffold são interativos por padrão e travam
+quando rodam sem terminal (agente, CI). Comandos validados, sem prompt:
+
+```bash
+# Next: o create-next-app não roda em pasta não vazia, e apps/web já tem
+# CLAUDE.md e docs/. Gerar fora e copiar o que interessa para apps/web.
+cd "$(mktemp -d)"
+bunx create-next-app@<versão> web --ts --tailwind --biome --app --src-dir \
+  --react-compiler --import-alias '@/*' --use-bun --skip-install \
+  --disable-git --no-agent-feedback --yes
+# depois, o ajuste de apps/web/docs/architecture.md, "## Diferenças no monorepo"
+
+# shadcn/ui (em apps/web): base Radix, preset Nova
+bunx shadcn@latest init -b radix -p nova --no-monorepo -y
+
+# schema do Better Auth (em apps/api): CLI `auth`, mesma versão do core
+bunx --bun auth generate --config src/lib/auth.ts --output src/db/schema/auth.ts --yes
+```
+
+O `--bun` do `auth generate` faz o Bun carregar o `.env.local` sozinho; sem
+ele, o `lib/env.ts` falha por falta de variável.
+
 ## Problemas comuns
+
+- **Porta 5432 ou 6379 ocupada** (`docker compose up` falha com "port is
+  already allocated"): a baseline usa as portas padrão, fixas no compose e
+  nos `.env*` dos apps e do CI. Parar o container ou serviço que ocupa a
+  porta (`docker ps`, `lsof -i :5432`). Não mudar a porta no compose de uma
+  instância: o `.env.test` commitado e a guarda de teste assumem
+  `localhost:5432`/`6379`.
 
 - **`next` rodando no Bun** (erros estranhos de runtime no web): existe
   um `bunfig.toml` com `[run] bun = true` fora de `apps/api`. Remover.
