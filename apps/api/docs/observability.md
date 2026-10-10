@@ -7,9 +7,11 @@
 ## Logging estruturado
 
 [Pino](https://getpino.io/) como logger. JSON em produção (consumível por
-qualquer agregador de log), `pino-pretty` só em `bun dev` (nunca em
+qualquer agregador de log), `pino-pretty` só em `development` (nunca em
 produção — formatação legível tem custo de performance que não vale a pena
-fora do terminal do desenvolvedor).
+fora do terminal do desenvolvedor). Em `test` o logger fica `silent`: a
+saída do `bun test` não se mistura com log, e o `pino-pretty` não sobe um
+worker thread em cada processo de teste.
 
 ```ts
 // lib/logger.ts
@@ -17,7 +19,7 @@ import pino from 'pino';
 import { env } from '@/lib/env';
 
 export const logger = pino({
-  level: env.NODE_ENV === 'production' ? 'info' : 'debug',
+  level: env.NODE_ENV === 'production' ? 'info' : env.NODE_ENV === 'test' ? 'silent' : 'debug',
   redact: {
     paths: [
       'req.headers.authorization',
@@ -32,10 +34,7 @@ export const logger = pino({
     ],
     censor: '[Redacted]',
   },
-  transport:
-    env.NODE_ENV !== 'production'
-      ? { target: 'pino-pretty' }
-      : undefined,
+  transport: env.NODE_ENV === 'development' ? { target: 'pino-pretty' } : undefined,
 });
 ```
 
