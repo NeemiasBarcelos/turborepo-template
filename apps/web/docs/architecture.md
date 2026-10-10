@@ -621,7 +621,7 @@ preview da Vercel); BFF com route handlers reimplementando cada rota
 **Decisão**: ky, em duas instâncias (`lib/api/client.ts` e
 `lib/api/server.ts`).
 **Contexto**: API sobre `fetch` (funciona igual em RSC, server actions e
-browser), `prefixUrl`, `hooks` para padronizar erro, retry e
+browser), `baseUrl`, `hooks` para padronizar erro, retry e
 `searchParams` tipados, com bundle pequeno.
 **Alternativas**: `fetch` puro (cada chamada repete tratamento de erro e
 serialização); axios (XHR no browser, fora do modelo de `fetch` do Next);

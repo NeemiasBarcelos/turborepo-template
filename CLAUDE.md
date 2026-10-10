@@ -26,7 +26,7 @@ Diferenças no monorepo". Quando conflitarem com este arquivo, este vence.
 
 Versionamento semântico próprio: ver `docs/versioning.md` para o que
 conta como MAJOR/MINOR/PATCH e `docs/CHANGELOG.md` para o histórico.
-Versão atual: **0.2.0** (embute app-nextjs `0.1.0` e api-bun `0.16.0`).
+Versão atual: **0.3.0** (embute app-nextjs `0.1.0` e api-bun `0.16.0`).
 
 ## Stack
 
@@ -139,4 +139,4 @@ baseline (`docs/versioning.md`), nunca como exceção silenciosa.
 
 ---
 
-Versão da baseline: 0.2.0. Ver `docs/CHANGELOG.md`.
+Versão da baseline: 0.3.0. Ver `docs/CHANGELOG.md`.

@@ -150,7 +150,7 @@ export function TaskForm({ organizationId }: { organizationId: string }) {
 
 ## Acessibilidade (mínimo obrigatório)
 
-- Todo input com `<Label>` associado (o `FormField` do shadcn já faz).
+- Todo input com label associado (`FieldLabel` com `htmlFor` igual ao `id` do input).
 - Botão só com ícone tem `aria-label` (ou `<span className="sr-only">`).
 - Interação por teclado funcionando. Não trocar `<button>` por `<div
   onClick>`.

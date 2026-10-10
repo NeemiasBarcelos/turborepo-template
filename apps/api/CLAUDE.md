@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 > Baseado em api-bun v0.16.0, adaptado ao monorepo `turborepo-template`
-> v0.1.0. Leia antes `../../CLAUDE.md` (regras da raiz, que vencem em caso
+> v0.3.0. Leia antes `../../CLAUDE.md` (regras da raiz, que vencem em caso
 > de conflito) e "## Diferenças no monorepo" no fim deste arquivo.
 
 Guia para o Claude ao trabalhar neste repositório. Este arquivo é a raiz —
@@ -157,4 +157,4 @@ e de `docs/` vale como está):
 ---
 
 Versão da baseline: 0.16.0 (api-bun), dentro de turborepo-template
-0.1.0. Ver `../../docs/CHANGELOG.md`.
+0.3.0. Ver `../../docs/CHANGELOG.md`.

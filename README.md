@@ -19,7 +19,7 @@ deste template e herda a stack e as regras abaixo.
 Este repositório contém a **baseline documentada** do monorepo (regras,
 arquitetura, Neon, desenvolvimento, deploy, CI/CD, convenções, git
 workflow, versionamento, fluxo de tasks do Claude Code), versão atual
-**0.2.0** (`docs/CHANGELOG.md`),
+**0.3.0** (`docs/CHANGELOG.md`),
 embutindo app-nextjs `0.1.0` e api-bun `0.16.0`.
 
 O scaffold de código **ainda não foi gerado**: não existem
