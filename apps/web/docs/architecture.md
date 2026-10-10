@@ -24,9 +24,12 @@ auth ou em qualquer dado de negócio aqui.
 ```
 src/
   app/                      # SÓ roteamento: layouts, pages, loading, error, not-found
-    (auth)/                 # route group das telas públicas (sign-in, sign-up, convite)
-    (app)/                  # route group autenticado — layout checa sessão
+    (auth)/                 # route group das telas públicas (sign-in, sign-up, accept-invitation/[id])
+    (app)/                  # route group autenticado — layout chama requireTenant() e monta o shell
+      layout.tsx            # shell: OrganizationSwitcher, ThemeToggle, SignOutButton
+      page.tsx              # home: saudação + info de dono (GET /api/users/me/roles)
       [modulo]/…            # uma pasta de rota por módulo de negócio
+    organizations/select/   # FORA dos grupos: só requireSession() (ver "### Rotas e shell de base")
     layout.tsx              # root layout: fontes, <Providers>
     providers.tsx           # "use client": QueryClientProvider + NuqsAdapter + Toaster
     globals.css             # Tailwind v4 + tokens de tema do shadcn
@@ -158,7 +161,7 @@ import ky from 'ky';
 import { toApiError } from '@/lib/api/errors';
 
 export const api = ky.create({
-  prefixUrl: '/api',
+  baseUrl: '/api/', // relativo: resolvido contra a origem da página
   credentials: 'include',
   retry: { limit: 1, methods: ['get'] },
   hooks: { beforeError: [toApiError] },
@@ -176,7 +179,7 @@ import { env } from '@/lib/env';
 export async function serverApi() {
   const cookie = (await headers()).get('cookie') ?? '';
   return ky.create({
-    prefixUrl: `${env.API_URL}/api`,
+    baseUrl: `${env.API_URL}/api/`,
     headers: { cookie },
     retry: 0,
     hooks: { beforeError: [toApiError] },
@@ -189,8 +192,12 @@ pelo rewrite), repassando o cookie da requisição original. Por isso
 `serverApi()` é uma função: ela lê o cookie do request atual e não pode ser
 um singleton de módulo.
 
-O formato exato das opções (`prefixUrl`, `hooks`, `retry`) segue a versão
-instalada do ky; conferir a doc antes do scaffold.
+Snippets validados com o **ky 2**. Em relação ao ky 1: `prefixUrl` virou
+`prefix`/`baseUrl` (a baseline usa `baseUrl`, como o ky recomenda, com a
+barra final e caminhos sem barra inicial: `api.get('users/me/roles')`); o
+hook `beforeError` recebe um objeto de estado (`({ error })`), não o erro;
+e o corpo do erro vem pré-lido em `error.data` (`error.response.json()` não
+funciona mais).
 
 ### Erros da API
 
@@ -198,6 +205,24 @@ O api-bun responde erro sempre como
 `{ statusCode, error, message, issues? }` (ver "## Tratamento de erros" no
 api-bun). `lib/api/errors.ts` converte o `HTTPError` do ky numa `ApiError`
 tipada com esses campos, e o resto do front só conhece `ApiError`:
+
+```ts
+// src/lib/api/errors.ts (trecho)
+import { apiErrorSchema } from '@repo/contracts/errors';
+import { type BeforeErrorState, isHTTPError } from 'ky';
+
+export function toApiError({ error }: BeforeErrorState): Error {
+  if (!isHTTPError(error)) return error;
+  const parsed = apiErrorSchema.safeParse(error.data); // corpo já lido pelo ky 2
+  if (parsed.success) return new ApiError(parsed.data);
+  return new ApiError({
+    statusCode: error.response.status,
+    error: 'HttpError',
+    message: 'Não foi possível completar a requisição',
+  });
+}
+```
+
 
 | Status | Tratamento no front |
 |---|---|
@@ -337,8 +362,10 @@ combinar com `startTransition` para o estado de carregamento.
 
 React Hook Form + `zodResolver`, com o schema Zod em
 `features/<modulo>/schemas/`. O mesmo schema tipa o formulário e valida o
-input antes de enviar. Componentes de formulário são os do shadcn/ui
-(`Form`, `FormField`, …). Erro 400 com `issues` do api-bun é mapeado de
+input antes de enviar. Componentes de formulário são os do shadcn/ui 4:
+`Field`, `FieldLabel`, `FieldError` (`components/ui/field.tsx`), ligados ao
+RHF por `Controller` (o antigo `Form`/`FormField` não existe mais no
+shadcn 4). Erro 400 com `issues` do api-bun é mapeado de
 volta para os campos (`setError`). Detalhes e exemplo em
 `docs/conventions.md`.
 
@@ -372,11 +399,12 @@ plugin no api-bun. O front não reimplementa nada disso.
 import 'server-only';
 import { redirect } from 'next/navigation';
 import { cache } from 'react';
+import { sessionSchema } from '@repo/contracts/session';
 import { serverApi } from '@/lib/api/server';
 
 export const getSession = cache(async () => {
   const api = await serverApi();
-  return api.get('auth/get-session').json<Session | null>(); // tipo exportado do schema de sessão
+  return sessionSchema.nullable().parse(await api.get('auth/get-session').json());
 });
 
 export async function requireSession() {
@@ -393,6 +421,10 @@ export async function requireTenant() {
 }
 ```
 
+A resposta é validada com o `sessionSchema` de `@repo/contracts/session`
+(`.nullable()`: sem sessão, o endpoint devolve `null`), como qualquer outra
+resposta da API. O tipo `Session` sai do schema, nunca escrito à mão.
+
 `cache()` do React deduplica a chamada dentro do mesmo render. O layout de
 `(app)/` chama `requireTenant()`, e páginas que precisam dos dados da
 sessão chamam de novo sem custo extra.
@@ -406,6 +438,36 @@ API, não decide permissão. A doc do Next e a do Better Auth dizem o mesmo:
 proxy não é camada de autorização. A checagem real é o `requireSession()`
 no layout e, acima de tudo, a própria API.
 
+### Rotas e shell de base
+
+O scaffold, antes de qualquer módulo de negócio, já tem:
+
+- **`(auth)/`**: `sign-in` (com `?next=` validado para só aceitar caminho
+  interno), `sign-up` e `accept-invitation/[id]`.
+- **`src/app/organizations/select/page.tsx`**, **fora** dos route groups:
+  só `requireSession()`. É para onde `requireTenant()` redireciona quem não
+  tem organização ativa. Dentro de `(app)/` ela entraria em loop, porque o
+  layout de `(app)/` chama `requireTenant()`.
+- **Shell do `(app)/layout.tsx`**: `requireTenant()`, cabeçalho com
+  `OrganizationSwitcher` (`features/organizations/components/`),
+  `ThemeToggle` e `SignOutButton` (`components/`).
+- **Home (`(app)/page.tsx`)**: saudação com o nome do usuário e se ele é
+  dono da organização ativa, via `GET /api/users/me/roles`. Sem módulos de
+  negócio, é o que prova que sessão, tenant e contrato estão ligados.
+
+A troca de organização segue a regra não-negociável (cache limpo +
+refresh):
+
+```tsx
+// src/features/organizations/components/organization-switcher.tsx (trecho)
+async function switchTo(organizationId: string) {
+  if (organizationId === activeOrganizationId) return;
+  await authClient.organization.setActive({ organizationId });
+  queryClient.clear(); // nada da organização anterior sobrevive em cache
+  router.refresh();
+}
+```
+
 ### Autorização na UI
 
 **Quem autoriza é o api-bun.** O front só **esconde ou desabilita** o que o
@@ -414,9 +476,10 @@ usuário não pode fazer, para não oferecer um botão que vai dar 403.
 - A matriz de permissão (`user`, `editor`, `manager`, `admin` → ações) e
   `can(role, action)` vêm de `@repo/contracts/permissions`, a mesma que a
   API usa. Não existe cópia no web.
-- A role do usuário em cada módulo vem da API (endpoint da instância que
-  devolve as roles do usuário na organização ativa; o dono é `admin` em
-  todos os módulos). O front **nunca** lê `members.role` do plugin para
+- A role do usuário em cada módulo vem de `GET /api/users/me/roles`
+  (`myRolesResponseSchema` de `@repo/contracts/users`: `isOwner` e a role
+  por módulo; o dono é `admin` em todos os módulos). Fica em
+  `features/users/api/` (query + versão server). O front **nunca** lê `members.role` do plugin para
   decidir permissão, mesma regra da API.
 - Um 403 da API é sempre tratado como possível (ver "### Erros da API"),
   mesmo quando a UI escondeu o botão.
@@ -492,8 +555,17 @@ Regras:
 
 - Tailwind **v4**: config em CSS (`@import "tailwindcss"`, `@theme` em
   `globals.css`), sem `tailwind.config.js`.
-- shadcn/ui instalado pela CLI (`bunx shadcn@latest init`/`add`), com
-  `components.json` commitado. Os componentes vivem em
+- shadcn/ui instalado pela CLI, com `components.json` commitado. O `init`
+  do shadcn 4 pergunta base e preset e trava sem TTY; a baseline fixa
+  **base Radix, preset Nova**: `bunx shadcn@latest init -b radix -p nova
+  --no-monorepo -y` (o `components.json` sai com `"style": "radix-nova"`).
+- O shadcn 4 troca `clsx` + `tailwind-merge` pelo pacote `cn`
+  (`lib/utils.ts` é só `export { cn } from 'cn'`) e passa a ser
+  dependência de runtime (`@import "shadcn/tailwind.css"` no
+  `globals.css`). Não reinstalar `clsx`/`tailwind-merge`.
+- `shadcn add` pode gerar código que o Biome recommended acusa (ex:
+  `field.tsx`). O `biome.json` da raiz tem um override para
+  `src/components/ui/**` (`../../docs/conventions.md`, "## Biome"). Os componentes vivem em
   `src/components/ui/` e **podem** ser editados. Não são dependência
   opaca.
 - Cor, raio, fonte: só via tokens CSS do tema (`bg-background`,
@@ -654,8 +726,47 @@ globais), que espalham um módulo pela árvore inteira.
   em `features/<modulo>/schemas/` são **de formulário** e podem derivar
   dos do contrato (`.pick`, `.extend`). A validação de resposta em
   `features/<modulo>/api/` usa o schema do contrato direto.
-- **`next.config.ts`**: acrescenta `transpilePackages: ['@repo/contracts']`
-  ao que está em "### Mesma origem via rewrite".
+- **`next.config.ts`** completo da baseline (acrescenta
+  `transpilePackages` e o loader do Tailwind ao de "### Mesma origem via
+  rewrite"):
+
+  ```ts
+  // apps/web/next.config.ts
+  import type { NextConfig } from 'next'
+  import { serverEnvSchema } from './src/lib/env.schema'
+
+  const env = serverEnvSchema.parse(process.env)
+
+  const nextConfig: NextConfig = {
+  	reactCompiler: true,
+  	// cacheComponents fica desligado: dado por sessão/tenant
+  	transpilePackages: ['@repo/contracts'],
+  	turbopack: {
+  		// Tailwind v4 via Turbopack, sem PostCSS (como o create-next-app 16.4 gera)
+  		rules: { '*.css': { loaders: ['@tailwindcss/turbopack'], as: '*.css' } },
+  	},
+  	async rewrites() {
+  		return [{ source: '/api/:path*', destination: `${env.API_URL}/api/:path*` }]
+  	},
+  }
+
+  export default nextConfig
+  ```
+
+- **Depois do `create-next-app`** (gerado fora e copiado, ver
+  `../../docs/development.md`, "## Geradores sem TTY"), remover o que a
+  versão 16.4 traz a mais e que conflita com a baseline:
+  - `cacheComponents: true` e `partialPrefetching: true` do
+    `next.config.ts` (ver "### Cache Components desligado");
+  - `biome.json` próprio (2 espaços): trocar pelo que estende a raiz
+    (`../../docs/conventions.md`, "## Biome");
+  - `.gitignore` próprio (o da raiz cobre, com `*.tsbuildinfo` e
+    `next-env.d.ts`);
+  - `@biomejs/biome` e `typescript` do `package.json` do app (versão
+    única, na raiz);
+  - `package-lock.json`/`bun.lock` gerados no app, se houver.
+  - Manter o `turbopack.rules` do `@tailwindcss/turbopack` e o
+    `AGENTS.md`.
 - **Env**: arquivos em `apps/web/` (`.env.local`, `.env.example`).
   `API_URL` e `NEXT_PUBLIC_*` são declaradas em `env` da task `build` no
   `turbo.json`, sem o que o turbo não as repassa ao `next build`.
@@ -663,3 +774,18 @@ globais), que espalham um módulo pela árvore inteira.
   (`../../docs/deploy.md`).
 - **Decisão "pnpm como único package manager"**: substituída (ver a nota
   na própria decisão).
+- **Sessão**: `sessionSchema` vem de `@repo/contracts/session`.
+
+### Correções à frente do app-nextjs v0.1.0
+
+Achados do primeiro scaffold (turborepo-template 0.3.0) corrigidos aqui e
+ainda **não** levados ao app-nextjs. Na próxima sincronização, não
+sobrescrever estes trechos sem conferir se o app-nextjs já os incorporou
+(lista também em `../../docs/CHANGELOG.md`):
+
+- ky 2 (`baseUrl`, `beforeError({ error })`, `error.data`).
+- shadcn 4 (`-b radix -p nova`, pacote `cn`, `Field` + `Controller`).
+- O que remover depois do `create-next-app` 16.4.
+- Sessão validada com schema Zod; rotas e shell de base.
+- Setup do Vitest com MSW 3, shim de `Request` e mock de
+  `next/navigation` (`docs/testing.md`).
