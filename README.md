@@ -84,20 +84,22 @@ São decisões de produto e de infra: não presuma nem deixe de fora sem pergunt
 
 Só depois de eu responder, gere o scaffold técnico inicial seguindo exatamente o que está documentado:
 - Raiz: package.json (workspaces, packageManager, scripts), turbo.json, biome.json, .bun-version, .nvmrc, .gitignore, .dockerignore, docker-compose.yml, docker/postgres-init/, commitlint.config.mjs, .husky/, .vscode/ (docs/architecture.md, docs/conventions.md, docs/development.md)
-- packages/tsconfig (base.json, nextjs.json, bun.json) e packages/contracts (errors, permissions, roles, modules), com typecheck e teste de can()
-- apps/api: o scaffold do api-bun (apps/api/docs/*), adaptado por "Diferenças no monorepo": tsconfig estendendo @repo/tsconfig, enums do @repo/contracts, Dockerfile com contexto na raiz (docs/deploy.md), .env.example e .env.test com app_dev/app_test
-- apps/web: o scaffold do app-nextjs (apps/web/docs/*), adaptado por "Diferenças no monorepo": sem pnpm, transpilePackages com @repo/contracts, permissões e erro vindos do @repo/contracts, Playwright subindo a API do monorepo
+- packages/tsconfig (base.json, nextjs.json, bun.json) e packages/contracts (errors, permissions, roles, modules, session, users, organizations), com typecheck e teste de can()
+- apps/api: o scaffold do api-bun (apps/api/docs/*), adaptado por "Diferenças no monorepo": tsconfig estendendo @repo/tsconfig, enums do @repo/contracts, src/app.ts com os módulos sob /api, Dockerfile com contexto na raiz (docs/deploy.md), .env.example e .env.test com app_dev/app_test. A base técnica da API inclui os módulos organizations (transfer-ownership) e users (roles por módulo: GET /api/users/me/roles, GET /api/users/roles, PUT e DELETE /api/users/:userId/roles/:module), com testes (apps/api/docs/architecture.md, "### Gerenciamento de roles e membros")
+- apps/web: o scaffold do app-nextjs (apps/web/docs/*), adaptado por "Diferenças no monorepo" (inclusive o que remover depois do create-next-app): sem pnpm, transpilePackages com @repo/contracts, permissões, erro e sessão vindos do @repo/contracts, rotas e shell de base, Playwright subindo a API do monorepo com os fluxos de auth
 - scripts/neon/: branch.ts, urls.ts, test-db.ts, diff.ts, delete.ts (docs/neon.md)
 - .github/workflows/: ci.yml, neon-cleanup.yml, api-build.yml, api-deploy.yml, e .github/dependabot.yml (docs/ci-cd.md), com o passo de deploy do host escolhido
 
+Para gerar o Next, o shadcn e o schema do Better Auth, use os comandos não interativos de docs/development.md, "## Geradores sem TTY": essas CLIs travam esperando resposta sem terminal. Instale o latest de cada dependência e compare a major com docs/architecture.md, "### Versões validadas"; major diferente da tabela, leia o changelog antes de seguir os snippets.
+
 Depois de gerar os arquivos acima:
-- Rode bun install, docker compose up -d, bun run db:migrate, bun run lint, bun run typecheck, bun run test e turbo run build, e corrija até passarem. Rode também o docker build da API a partir da raiz.
+- Rode bun install, docker compose up -d, bun run db:migrate, bun run lint, bun run typecheck, bun run test e turbo run build, e corrija até passarem. Rode também o docker build da API a partir da raiz e o E2E: (cd apps/api && NODE_ENV=test bun run db:migrate) e turbo run test:e2e --filter=@repo/web.
 - Atualize README.md e CLAUDE.md para refletirem esta instância, não o template: troque a seção "Status atual" do README pelo estado real e adicione no topo do CLAUDE.md a linha "> Baseado no template turborepo-template vX.Y.Z" com a versão documentada agora, conforme docs/versioning.md. Registre as respostas às perguntas acima em docs/domain.md.
 - Antes de commitar qualquer coisa, rode git remote -v. Se o remote origin ainda aponta para o repositório do template (turborepo-template) de onde você clonou, PARE e me pergunte: criar um repositório novo no GitHub para esta instância (e trocar o origin), ou adicionar um remoto novo. Nunca commite nem dê push para o repositório de origem do template (docs/git-workflow.md).
 - Só depois disso, siga docs/git-workflow.md para commitar o scaffold: crie uma branch, rode bun run lint e bun run typecheck, commit em Conventional Commits, e abra PR para main. Nunca deixe os arquivos gerados como mudança não commitada direto em main.
 - Me passe a lista do que eu preciso configurar fora do repositório (Neon, secrets e environments do GitHub, Vercel, host da API, Redis), seguindo "## Setup de uma instância nova" de docs/checklists.md.
 
-Não invente domínio de negócio: docs/domain.md está vazio de propósito. Não crie módulos de feature reais ainda, só a base técnica (auth, tenant, erro, health, layout, providers, contrato base). Se alguma decisão não estiver clara na documentação, pare e me pergunte em vez de assumir.
+Não invente domínio de negócio: docs/domain.md está vazio de propósito. Não crie módulos de feature reais ainda, só a base técnica (auth, tenant, erro, health, rate limit, layout, providers, contrato base, e os módulos de administração organizations e users descritos acima). Se alguma decisão não estiver clara na documentação, pare e me pergunte em vez de assumir.
 ```
 
 Depois que o scaffold rodar, vale um segundo prompt pedindo **uma feature

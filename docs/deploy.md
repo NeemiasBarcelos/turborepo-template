@@ -69,7 +69,8 @@ raiz porque o `bun.lock` e o `packages/contracts` estão lá.
 # apps/api/Dockerfile
 # contexto de build: raiz do monorepo
 # docker build -f apps/api/Dockerfile --build-arg BUN_VERSION=$(cat .bun-version) -t api .
-ARG BUN_VERSION
+# o default espelha .bun-version (muda junto, docs/checklists.md); o CI sempre passa o arg
+ARG BUN_VERSION=1.3.11
 
 FROM oven/bun:${BUN_VERSION} AS build
 ENV HUSKY=0
@@ -112,6 +113,12 @@ CMD ["bun", "dist/index.js"]
   runtime, não-root, `HEALTHCHECK` em `/health`, `CMD` exec, segredos só
   em runtime, migrations fora da imagem) é o do api-bun e está em
   `apps/api/docs/docker.md`.
+- **`ARG BUN_VERSION` tem default** igual ao `.bun-version`. Sem ele, o
+  build emite `InvalidDefaultArgInFrom` e, sem o `--build-arg`, falha com
+  "nome de imagem inválido". O CI e o comando documentado continuam
+  passando o arg; o default só evita o erro críptico. Ao subir o Bun, o
+  default muda na mesma PR (`docs/checklists.md`, "## Subir Bun, Node ou
+  `neonctl`").
 - Por que não `turbo prune`: `docs/architecture.md`, "### Imagem da API
   sem `turbo prune`".
 
@@ -173,6 +180,37 @@ mudam):
 | **Railway** | Serviço com fonte *Docker image* | Railway CLI (`railway`) com `RAILWAY_TOKEN` do projeto, ou redeploy pela API |
 | **Render** | *Web Service* do tipo *Existing image* | *Deploy hook* com `?imgURL=` apontando para a tag nova |
 | **VM com Docker** (Droplet etc.) | `docker compose` com a imagem | SSH + `docker compose pull && docker compose up -d` |
+
+Credencial de registry: a imagem do GHCR é **privada** por padrão. O host
+precisa de uma credencial com `read:packages` (PAT clássico ou fine-grained
+de uma conta de serviço) cadastrada como *registry credential*, ou o pull
+falha. Tornar o pacote público só se a instância decidir isso
+explicitamente.
+
+#### Referência: Render
+
+Validado na primeira instância. Cada serviço (`api-staging`,
+`api-production`) é um *Web Service* com fonte *Existing image* e a
+credencial do GHCR. O *deploy hook* de cada serviço vira o secret
+`RENDER_DEPLOY_HOOK_URL` do Environment correspondente:
+
+```yaml
+# .github/workflows/api-deploy.yml, job deploy-staging (deploy-production igual)
+- name: Deploy no Render
+  env:
+    RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+  run: |
+    image="ghcr.io/${GITHUB_REPOSITORY,,}-api:sha-$SHA"
+    curl --fail --silent --show-error --output /dev/null -X POST \
+      --get --data-urlencode "imgURL=$image" "$RENDER_DEPLOY_HOOK_URL"
+    echo "deploy de staging disparado: sha-$SHA"
+```
+
+- A URL do hook já traz `?key=<segredo>`: o `--get --data-urlencode`
+  acrescenta `&imgURL=…` codificado. Nunca imprimir a URL (sem `-v`, sem
+  `echo`).
+- `${GITHUB_REPOSITORY,,}` põe o nome em minúsculas, como o GHCR exige.
+- `--fail` faz o job falhar se o Render recusar o hook.
 
 A escolha do host, os ids/tokens usados e o passo real do job `deploy`
 vão para `docs/domain.md` da instância. Os tokens ficam como secrets dos

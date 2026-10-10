@@ -53,7 +53,7 @@ raiz, no estilo do api-bun"):
 ```jsonc
 // biome.json
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.2/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
   "root": true,
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
   "files": {
@@ -65,9 +65,26 @@ raiz, no estilo do api-bun"):
   },
   "linter": {
     "enabled": true,
-    "rules": { "recommended": true }
+    "rules": { "preset": "recommended" }
   },
-  "assist": { "actions": { "source": { "organizeImports": "on" } } }
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "overrides": [
+    {
+      // wrappers do neonctl rodam por `bun run neon:*`, não como task do turbo
+      "includes": ["scripts/**"],
+      "linter": { "rules": { "suspicious": { "noUndeclaredEnvVars": "off" } } }
+    },
+    {
+      // código gerado pelo `shadcn add`: não editar só para agradar o lint
+      "includes": ["apps/web/src/components/ui/**"],
+      "linter": {
+        "rules": {
+          "a11y": { "useSemanticElements": "off" },
+          "suspicious": { "noDoubleEquals": "off", "noArrayIndexKey": "off" }
+        }
+      }
+    }
+  ]
 }
 ```
 
@@ -85,7 +102,19 @@ raiz, no estilo do api-bun"):
 
 - A versão do `$schema` acompanha a do `@biomejs/biome` da raiz. Ao subir
   o Biome, rodar `bunx biome migrate --write`.
+- No Biome 2.5, `"rules": { "recommended": true }` está deprecado
+  (aviso "Use preset instead"). O `biome migrate` faz a troca.
 - `apps/api` não precisa de `biome.json` próprio: herda a raiz.
+- **Overrides da baseline**, os únicos permitidos sem bump:
+  - `scripts/**` sem `noUndeclaredEnvVars`: a regra (domínio turbo) cobra
+    variável declarada no `turbo.json`, e os wrappers de
+    `scripts/neon/` não rodam pelo turbo (`NEON_PROJECT_ID`,
+    `GITHUB_ENV`).
+  - `apps/web/src/components/ui/**` sem `useSemanticElements`,
+    `noDoubleEquals` e `noArrayIndexKey`: o código do `shadcn add` (ex:
+    `field.tsx`) quebra essas regras, e corrigir à mão se perde no próximo
+    `shadcn add --overwrite`. Componente próprio fora de `components/ui/`
+    segue o recommended completo.
 - Exemplos de código copiados das docs dos templates podem estar em outro
   estilo (o app-nextjs usa aspas duplas). O `bun run check` normaliza, e
   a doc não é reescrita só por isso.
@@ -96,6 +125,9 @@ raiz, no estilo do api-bun"):
   (`docs/architecture.md`, "### `packages/tsconfig`").
 - `typecheck` existe em todo workspace com código (`tsc --noEmit`; no
   web, `next typegen && tsc --noEmit`).
+- `scripts/` não é workspace e fica **fora** do `typecheck` (só lint). Os
+  wrappers são curtos e rodam direto pelo Bun, que falha na hora com erro
+  de tipo grosseiro; um `tsconfig` só para eles não se paga ainda.
 - Não usar *project references* (`composite`). Os pacotes são JIT e o
   `tsc` de cada app já enxerga o fonte do `contracts`.
 
@@ -144,7 +176,13 @@ test-results
 !apps/api/.env.test
 .neon
 .vercel
+*.tsbuildinfo
+next-env.d.ts
 ```
+
+`*.tsbuildinfo` e `next-env.d.ts` (gerado pelo `next typegen`/`next dev`)
+ficam no `.gitignore` da raiz, porque o `.gitignore` que o
+`create-next-app` gera em `apps/web` é removido no scaffold.
 
 ## VSCode
 
